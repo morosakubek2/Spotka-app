@@ -1,50 +1,21 @@
 ```
-# Flutter/Dart
-.dart_tool/
-.packages
-.pub/
-build/
-*.g.dart
-*.freezed.dart
-
-# Rust
+# Dependencies
 target/
 Cargo.lock
 
-# Dependencies
-node_modules/
+# Logs and temp files
+*.log
+*.tmp
 
 # Environment
 .env
 .env.local
 *.env.*
 
-# Logs
-*.log
-
-# OS generated files
-.DS_Store
-Thumbs.db
-
-# Editor
+# Editors
 .vscode/
 .idea/
-*.swp
-*.swo
-*.tmp
 
-# Coverage
-coverage/
-htmlcov/
-.coverage
-
-# Python (if any Python tools used)
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.pytest_cache/
-.mypy_cache/
-venv/
-.venv/
+# Build scripts
+scripts/build-alpha.sh
 ```
