@@ -1,68 +1,209 @@
-// Importy słowników są symulowane przez funkcję tr() w Rust
-// W Slint używamy property, które są wypełniane z Rusta
+// mobile/rust-core/src/ui/main_window.slint
+// Main Window Definition: Reductive Functionalism (B&W Only).
+// Architecture: Hybrid (Free P2P + Premium Server Features).
+// Year: 2026 | Slint Version: 1.6+
+
+import { VerticalLayout, HorizontalLayout, Text, Button, TabWidget, TextInput } from "std-widgets.slint";
+
+// Import Components (Placeholders for now)
+// In real build, these paths must match the file structure
+export component TagBadge from "components/tag_badge.slint";
+export component UserCard from "components/user_card.slint";
+export component NavBar from "components/nav_bar.slint";
+
+// Import Views
+export component MeetingsView from "meetings_list.slint";
+export component RelationsView from "relations.slint";
+export component PingView from "ping.slint";
+export component HelpView from "help.slint";
+export component SettingsView from "settings.slint";
+export component EventsView from "events_view.slint"; // NEW: Premium Events View
 
 export component MainWindow inherits Window {
     width: 400px;
     height: 800px;
     title: "Spotka";
-
-    // Property injectowane z Rusta (tłumaczenia)
-    in-out property <string> txt_meetings;
-    in-out property <string> txt_relations;
-    in-out property <string> txt_ping;
-    in-out property <string> txt_help;
-    in-out property <string> txt_settings;
     
-    // Stan aplikacji
-    in-out property <int> active_tab;
+    // State Properties
+    in-out property <bool> is_loading: false;
+    in-out property <bool> is_premium: false; // Controls Premium UI visibility
+    in-out property <string> active_tab: "meetings";
+    in-out property <string> error_message: "";
+    
+    // Callbacks
+    callback request_tab_change(string);
+    callback request_refresh();
+    callback request_premium_upgrade();
+
+    // Global Style: Monochrome (Reductive Functionalism)
+    default-font-family: "Inter", "Roboto", "San Francisco", sans-serif;
+    background: #FFFFFF; // Light mode default (inverted via logic later)
+    color: #000000;
 
     VerticalLayout {
-        // Główne содержимое (zmienia się w zależności od active_tab)
-        if active_tab == 0: MeetingsView {}
-        if active_tab == 1: RelationsView {}
-        if active_tab == 2: PingView {}
-        if active_tab == 3: HelpView {}
-        if active_tab == 4: SettingsView {}
+        alignment: center;
+        padding: 0px;
 
-        // Dolny pasek nawigacji
-        HorizontalLayout {
-            alignment: center;
-            spacing: 4px;
-            height: 60px;
-            background: #f0f0f0;
-
-            Button {
-                text: root.txt_meetings;
-                clicked => { root.active_tab = 0; }
-                font-weight: root.active_tab == 0 ? bold : normal;
-            }
-            Button {
-                text: root.txt_relations;
-                clicked => { root.active_tab = 1; }
-                font-weight: root.active_tab == 1 ? bold : normal;
-            }
-            Button {
-                text: root.txt_ping;
-                clicked => { root.active_tab = 2; }
-                font-weight: root.active_tab == 2 ? bold : normal;
-            }
-            Button {
-                text: root.txt_help;
-                clicked => { root.active_tab = 3; }
-                font-weight: root.active_tab == 3 ? bold : normal;
-            }
-            Button {
-                text: root.txt_settings;
-                clicked => { root.active_tab = 4; }
-                font-weight: root.active_tab == 4 ? bold : normal;
+        // --- TOP BAR: Status & Subscription ---
+        Rectangle {
+            height: 40px;
+            width: 100%;
+            background: #F0F0F0; // Light gray for separation
+            border-bottom-width: 1px;
+            border-bottom-color: #000000;
+            
+            HorizontalLayout {
+                alignment: left;
+                padding: 10px;
+                Text {
+                    text: "Spotka v0.1.0-alpha";
+                    font-size: 12px;
+                    font-weight: bold;
+                    vertical-alignment: center;
+                }
+                
+                // PREMIUM INDICATOR (Visible only if is_premium)
+                if (root.is_premium) {
+                    Rectangle {
+                        width: 20px;
+                        height: 20px;
+                        background: #000000; // Black star/crown placeholder
+                        visible: root.is_premium;
+                        // In real UI, use an SVG or geometric shape for "Premium"
+                        Text {
+                            text: "★"; 
+                            color: #FFFFFF;
+                            font-size: 14px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Text {
+                        text: tr("LABEL_PREMIUM_ACTIVE");
+                        font-size: 10px;
+                        font-weight: bold;
+                        vertical-alignment: center;
+                        margin-left: 5px;
+                    }
+                } else {
+                    Text {
+                        text: tr("LABEL_FREE_MODE");
+                        font-size: 10px;
+                        font-style: italic;
+                        vertical-alignment: center;
+                        margin-left: 5px;
+                    }
+                }
+                
+                StandardButton {
+                    text: tr("ACTION_REFRESH");
+                    min-width: 60px;
+                    clicked => root.request_refresh();
+                }
             }
         }
+
+        // --- MAIN CONTENT AREA ---
+        Rectangle {
+            width: 100%;
+            height: 100%; // Fill remaining space
+            background: #FFFFFF;
+            
+            if (root.is_loading) {
+                VerticalLayout {
+                    alignment: center;
+                    Text { text: tr("MSG_LOADING_CORE"); font-size: 16px; }
+                    // Simple spinner animation could go here
+                }
+            } else if (root.error_message != "") {
+                VerticalLayout {
+                    alignment: center;
+                    Text { 
+                        text: root.error_message; 
+                        color: #FF0000; // Error red (only exception to B&W rule for critical errors)
+                        font-weight: bold;
+                    }
+                    StandardButton {
+                        text: tr("ACTION_RETRY");
+                        clicked => root.request_refresh();
+                    }
+                }
+            } else {
+                // TAB WIDGET FOR NAVIGATION
+                TabWidget {
+                    current-index <=> root.active_tab_index; // Logic to map string to index
+                    
+                    // TAB 1: SPOTKANIA (Meetings) - ALWAYS VISIBLE
+                    Tab {
+                        title: tr("TAB_MEETINGS");
+                        MeetingsView {
+                            is_premium: root.is_premium;
+                        }
+                    }
+
+                    // TAB 2: RELACJE (Relations) - ALWAYS VISIBLE
+                    Tab {
+                        title: tr("TAB_RELATIONS");
+                        RelationsView {
+                            is_premium: root.is_premium;
+                        }
+                    }
+
+                    // TAB 3: PING - ALWAYS VISIBLE
+                    Tab {
+                        title: tr("TAB_PING");
+                        PingView {}
+                    }
+
+                    // TAB 4: WYDARZENIA (Events) - PREMIUM ONLY
+                    // If Free, this tab might be hidden OR show a teaser
+                    if (root.is_premium) {
+                        Tab {
+                            title: tr("TAB_EVENTS");
+                            EventsView {
+                                // Pass premium features
+                            }
+                        }
+                    } else {
+                        // Optional: Show a "Teaser" tab for Free users to upsell
+                        Tab {
+                            title: tr("TAB_EVENTS");
+                            VerticalLayout {
+                                alignment: center;
+                                Text { 
+                                    text: tr("MSG_EVENTS_PREMIUM_ONLY"); 
+                                    font-size: 14px; 
+                                    horizontal-alignment: center;
+                                }
+                                StandardButton {
+                                    text: tr("ACTION_UPGRADE_TO_PREMIUM");
+                                    clicked => root.request_premium_upgrade();
+                                }
+                            }
+                        }
+                    }
+
+                    // TAB 5: POMOC (?) - ALWAYS VISIBLE
+                    Tab {
+                        title: "?";
+                        HelpView {}
+                    }
+
+                    // TAB 6: USTAWIENIA - ALWAYS VISIBLE
+                    Tab {
+                        title: tr("TAB_SETTINGS");
+                        SettingsView {
+                            is_premium: root.is_premium;
+                            // Bindings for settings changes
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Helper property to map string tab names to TabWidget indices
+        in-out property <int> active_tab_index: 0;
+        // Logic to update index when string changes (pseudo-code for Slint logic block)
+        // on active_tab changed => { ... mapping logic ... }
     }
 }
-
-// Placeholder components for views (real implementation in separate files)
-component MeetingsView inherits Rectangle { background: white; Text { text: "Meetings List"; } }
-component RelationsView inherits Rectangle { background: white; Text { text: "Relations Graph"; } }
-component PingView inherits Rectangle { background: white; Text { text: "Ping / Scan"; } }
-component HelpView inherits Rectangle { background: white; Text { text: "Help & Wiki"; } }
-component SettingsView inherits Rectangle { background: white; Text { text: "Settings"; } }

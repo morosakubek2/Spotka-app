@@ -1,0 +1,33 @@
+{
+  "language": "eo",
+  "keys": {
+    "txt_tab_meetings": "RENKONTOJ",
+    "txt_tab_relations": "RILATOJ",
+    "txt_tab_ping": "PING",
+    "txt_tab_help": "?",
+    "txt_tab_settings": "AGORDOJ",
+    "lbl_create_meeting_title": "Nova Renkonto",
+    "lbl_main_goal_tag": "Ĉefa Celo (unu etikedo)",
+    "ph_enter_single_word": "ekz. kino, biciklo",
+    "lbl_guests_without_app": "Gastoj (sen apo):",
+    "KEY_DATA_OVERLOAD_WARNING": "AVERTO: Reĝimo sen vortaro pliigas datenuzon je 300%!",
+    "lbl_suggest_download_dict": "Rekomendatas elŝuti oficialan vortaron.",
+    "btn_cancel": "Nuligi",
+    "btn_publish": "Publikigi",
+    "lbl_ping_title": "Rapida Parigo",
+    "lbl_scan_or_show": "Skenu kodon de amiko aŭ montru vian.",
+    "btn_generate_qr": "Montri Mian Kodon",
+    "btn_scan_qr": "Skenu Kodon",
+    "btn_nfc_pair": "Parigi per NFC",
+    "lbl_relations_title": "Via Fido-Reto",
+    "lbl_no_relations_yet": "Ankoraŭ neniuj verigitaj rilatoj.",
+    "lbl_help_title": "Helpo kaj Vikio",
+    "btn_wiki": "Malfermi Vikion",
+    "btn_report_bug": "Raporti Eraron",
+    "lbl_settings_title": "Agordoj",
+    "lbl_storage_radius": "Radiuso de Datena Konservado (km)",
+    "lbl_language": "Lingvo de la Apo",
+    "lbl_meetings_title": "Haveblaj Renkontoj",
+    "lbl_loading_meetings": "Ŝargado de renkontoj el reto P2P..."
+  }
+}

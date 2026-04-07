@@ -1,0 +1,191 @@
+// mobile/rust-core/src/ui/relations.slint
+// Relations View: Web of Trust Management.
+// Philosophy: Reductive Functionalism (B&W only), No Empty States (Physical connection required).
+// Year: 2026 | Rust Edition: 2024
+
+import { StandardButton, VerticalLayout, HorizontalLayout, Text, TextInput, ScrollView } from "std-widgets.slint";
+import { UserCard } from "components/user_card.slint";
+import { TagBadge } from "components/tag_badge.slint";
+
+export component RelationsView {
+    width: 100%;
+    height: 100%;
+
+    // Data Models
+    in-out property <[RelationItem]> relations_list;
+    in-out property <bool> is_loading;
+    in-out property <string> error_message; // Error key for translation
+
+    // Signal to switch to PING tab for adding new connections
+    signal request_add_connection();
+    // Signal to show user details modal
+    signal show_user_details(int index);
+    // Signal to report a user (opens modal)
+    signal report_user(int index);
+    // Signal to sync trust graph manually
+    signal sync_trust_graph();
+
+    // Data Structure for Rust interop
+    struct RelationItem {
+        user_id: string,
+        display_name: string, // From phone contacts if available
+        phone_label: string,  // e.g., "Marek (555-0199)"
+        reputation_score: int, // 0 to 5
+        verifier_count: int,
+        is_verified_by_me: bool,
+        last_seen_timestamp: int,
+        has_active_meetups: bool,
+    }
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 10px;
+
+        // Header
+        HorizontalLayout {
+            alignment: center;
+            Text {
+                text: tr("KEY_RELATIONS_TITLE");
+                font-size: 24px;
+                font-weight: bold;
+                horizontal-alignment: center;
+            }
+            StandardButton {
+                text: tr("KEY_ACTION_SYNC");
+                min-width: 80px;
+                clicked => root.sync_trust_graph();
+                // Visual style: Dashed border for "Sync" action
+            }
+        }
+
+        // Main Content Area
+        if is_loading {
+            VerticalLayout {
+                alignment: center;
+                Text {
+                    text: tr("KEY_STATUS_LOADING_GRAPH");
+                    font-style: italic;
+                }
+                // Simple B&W Spinner animation placeholder
+                Rectangle {
+                    width: 40px; height: 40px;
+                    border-width: 2px;
+                    border-color: black;
+                    background: transparent;
+                    // Animation logic would go here in Rust/Slint state
+                }
+            }
+        } else if relations_list.length == 0 {
+            // CRITICAL DESIGN CHOICE: No "Empty List" state allowed.
+            // If list is empty, it means NO PHYSICAL CONNECTIONS exist.
+            // We must guide the user to fix this immediately.
+            VerticalLayout {
+                alignment: center;
+                spacing: 20px;
+                padding: 20px;
+                
+                Text {
+                    text: tr("KEY_RELATIONS_EMPTY_WARNING");
+                    font-size: 18px;
+                    font-weight: bold;
+                    horizontal-alignment: center;
+                    wrap: word;
+                }
+                Text {
+                    text: tr("KEY_RELATIONS_EMPTY_INSTRUCTION");
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                    wrap: word;
+                    color: #555555; // Dark gray for secondary text
+                }
+                
+                // Visual representation of "Physical Link" broken
+                Rectangle {
+                    width: 100px; height: 2px;
+                    background: black;
+                    // Draw a break in the middle
+                    Rectangle {
+                        x: 45px; y: -4px; width: 10px; height: 10px;
+                        background: white; // Creates a gap
+                        border-color: black;
+                        border-width: 1px;
+                    }
+                }
+
+                StandardButton {
+                    text: tr("KEY_ACTION_GO_TO_PING");
+                    min-width: 200px;
+                    clicked => root.request_add_connection();
+                    // Strong visual weight to encourage action
+                }
+            }
+        } else {
+            // List of Relations
+            ScrollView {
+                VerticalLayout {
+                    spacing: 10px;
+                    padding: 10px;
+                    
+                    for relation_item <=> root.relations_list : UserCard {
+                        user_data: relation_item;
+                        // Pass contact name integration
+                        contact_label: relation_item.phone_label; 
+                        
+                        clicked => root.show_user_details(index);
+                        
+                        // Context Menu / Actions inside UserCard or via long-press
+                        // For simplicity in this view, we add a small "Report" button on the card
+                        // Or handle it in the details modal. Let's assume details modal for Report.
+                    }
+                }
+            }
+            
+            // Floating Action Button (FAB) for quick adding
+            // Positioned absolutely at bottom right
+            Rectangle {
+                width: 60px; height: 60px;
+                background: black; // Solid black for primary action
+                border-radius: 30px;
+                x: parent.width - 70px;
+                y: parent.height - 70px;
+                
+                Text {
+                    text: "+";
+                    font-size: 40px;
+                    color: white;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                
+                TouchArea {
+                    clicked => root.request_add_connection();
+                }
+                
+                // Accessibility label
+                accessible-name: tr("KEY_ACTION_ADD_RELATION");
+            }
+        }
+        
+        // Global Error Banner (if sync fails etc)
+        if error_message != "" {
+            Rectangle {
+                background: white;
+                border-width: 2px;
+                border-color: black;
+                border-style: dashed; // Dashed for warning/non-critical error
+                
+                VerticalLayout {
+                    Text {
+                        text: tr(error_message); // Dynamic translation key
+                        font-weight: bold;
+                        wrap: word;
+                    }
+                    StandardButton {
+                        text: tr("KEY_ACTION_DISMISS");
+                        clicked => { root.error_message = ""; }
+                    }
+                }
+            }
+        }
+    }
+}

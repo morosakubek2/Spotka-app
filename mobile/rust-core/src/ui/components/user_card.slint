@@ -1,0 +1,231 @@
+// mobile/rust-core/src/ui/components/user_card.slint
+// User Card Component: Displays user info, reputation, and trust status.
+// Design: Reductive Functionalism (B&W, geometric indicators).
+// Features: Reputation dots, Verifier count, Guest indicator, Ghost mode, A11y.
+// Year: 2026 | Slint Version: 1.6+
+
+import { Rectangle, Text, HorizontalLayout, VerticalLayout } from "std-widgets.slint";
+
+// --- Component: UserCard ---
+export component UserCard {
+    // Inputs
+    in property <string> display_name;      // Pseudonym or Name from Contacts
+    in property <string> phone_label;       // Label from Phonebook (e.g., "Mom")
+    in property <int> reputation_score;     // 0 to 5
+    in property <int> verifier_count;       // Number of trusted verifiers
+    in property <bool> is_guest;            // True if user doesn't have the app yet
+    in property <bool> is_ghost;            // True if user is in "Ghost Mode"
+    in property <bool> is_verified_by_me;   // True if I have personally verified them
+    in property <bool> is_compact;          // Compact mode for lists vs detailed for profiles
+
+    // Outputs
+    out signal clicked();
+
+    // Dimensions
+    width: 100%;
+    height: is_compact ? 60px : 100px;
+
+    // Accessibility
+    accessible-name: `${display_name}, Reputation ${reputation_score} out of 5, ${verifier_count} verifiers`;
+
+    Rectangle {
+        background: #ffffff;
+        border-color: #000000;
+        border-width: 1px;
+        radius: 6px;
+        width: 100%;
+        height: 100%;
+
+        clicked => { root.clicked(); }
+
+        HorizontalLayout {
+            alignment: center;
+            padding: 10px;
+            spacing: 10px;
+
+            // --- Avatar / Initial Placeholder ---
+            Rectangle {
+                width: 40px;
+                height: 40px;
+                background: #000000; // Solid black circle
+                radius: 20px;
+                
+                Text {
+                    text: display_name.substr(0, 1); // First letter
+                    color: #ffffff;
+                    font-size: 20px;
+                    font-weight: bold;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
+                }
+
+                // Ghost Mode Indicator (Overlay)
+                if (is_ghost) {
+                    Rectangle {
+                        x: -5px; y: -5px; width: 50px; height: 50px;
+                        background: transparent;
+                        border-color: #000000;
+                        border-width: 2px;
+                        border-style: dashed;
+                        radius: 25px;
+                    }
+                }
+            }
+
+            // --- Info Column ---
+            VerticalLayout {
+                alignment: left;
+                spacing: 4px;
+                width: 100%;
+
+                // Row 1: Name & Labels
+                HorizontalLayout {
+                    spacing: 5px;
+                    
+                    Text {
+                        text: display_name;
+                        font-weight: bold;
+                        font-size: 16px;
+                        color: #000000;
+                    }
+
+                    // Phonebook Label Badge
+                    if (phone_label != "") {
+                        Rectangle {
+                            background: #000000;
+                            radius: 3px;
+                            padding: 2px 4px;
+                            Text {
+                                text: phone_label;
+                                color: #ffffff;
+                                font-size: 10px;
+                            }
+                        }
+                    }
+
+                    // Guest Badge
+                    if (is_guest) {
+                        Rectangle {
+                            background: transparent;
+                            border-color: #000000;
+                            border-width: 1px;
+                            border-style: dotted;
+                            radius: 3px;
+                            padding: 2px 4px;
+                            Text {
+                                text: tr("KEY_USER_GUEST"); // "Guest"
+                                color: #000000;
+                                font-size: 10px;
+                                font-style: italic;
+                            }
+                        }
+                    }
+                }
+
+                // Row 2: Reputation & Stats
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: center;
+
+                    // Reputation Dots (●●●○○)
+                    HorizontalLayout {
+                        spacing: 2px;
+                        for i in 5: Rectangle {
+                            width: 8px; height: 8px;
+                            radius: 4px;
+                            background: i < reputation_score ? #000000 : transparent;
+                            border-color: #000000;
+                            border-width: 1px;
+                        }
+                    }
+
+                    // Verifier Count
+                    if (!is_compact || verifier_count > 0) {
+                        Text {
+                            text: `${verifier_count} 🛡️`; // Shield icon or text "V"
+                            font-size: 12px;
+                            color: #000000;
+                        }
+                    }
+
+                    // Unverified Warning (if 0 verifiers and not guest)
+                    if (verifier_count == 0 && !is_guest) {
+                        Rectangle {
+                            width: 16px; height: 16px;
+                            background: #000000;
+                            clip: true;
+                            radius: 2px;
+                            // Triangle shape simulated
+                            Text {
+                                text: "!";
+                                color: #ffffff;
+                                font-size: 12px;
+                                font-weight: bold;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                width: 100%; height: 100%;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Right Side: Verification Status (Checkmark)
+            if (is_verified_by_me) {
+                Rectangle {
+                    width: 24px; height: 24px;
+                    background: #000000;
+                    radius: 12px;
+                    Text {
+                        text: "✓";
+                        color: #ffffff;
+                        font-size: 18px;
+                        font-weight: bold;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%; height: 100%;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// --- Example Usage ---
+/*
+export component TestContainer inherits Window {
+    width: 400px; height: 300px;
+    VerticalLayout {
+        spacing: 10px;
+        padding: 10px;
+        
+        // Standard User
+        UserCard { 
+            display_name: "Anna K."; 
+            reputation_score: 4; 
+            verifier_count: 3; 
+            is_verified_by_me: true; 
+        }
+
+        // Guest (No App)
+        UserCard { 
+            display_name: "Tomek"; 
+            phone_label: "Friend";
+            reputation_score: 0; 
+            verifier_count: 0; 
+            is_guest: true; 
+            is_compact: true;
+        }
+
+        // Ghost Mode & Unverified
+        UserCard { 
+            display_name: "Unknown"; 
+            reputation_score: 2; 
+            verifier_count: 0; 
+            is_ghost: true; 
+        }
+    }
+}
+*/

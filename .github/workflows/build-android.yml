@@ -2,25 +2,110 @@ name: Build Android Alpha
 
 on:
   push:
-    tags: [ 'v*' ]
-  workflow_dispatch:
+    tags:
+      - 'v*' # Uruchamia tylko przy tagach wersji
+  workflow_dispatch: # Pozwala na ręczne uruchomienie
 
 permissions:
-  contents: write
+  contents: write # Wymagane do tworzenia Release i uploadu artefaktów
 
 jobs:
-  build:
+  build-android:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-action@stable
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
         with:
-          targets: aarch64-linux-android
-      - name: Build Rust
-        run: cd mobile/rust-core && cargo build --release --target aarch64-linux-android
-      - name: Create Release
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle' # Cache dla Gradle
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
+          components: rustfmt, clippy
+          cache: true # Cache dla Cargo
+
+      - name: Install Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25c
+          add-to-path: true
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Setup Local Properties (for NDK path)
+        run: |
+          echo "ndk.dir=$ANDROID_NDK_HOME" > mobile/android/local.properties
+          echo "sdk.dir=$ANDROID_HOME" >> mobile/android/local.properties
+
+      - name: Build Rust Core for Android
+        run: |
+          cd mobile/rust-core
+          cargo ndk \
+            -t arm64-v8a \
+            -t armeabi-v7a \
+            -t x86_64 \
+            -o ../android/app/src/main/jniLibs \
+            build --release
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x mobile/android/gradlew
+
+      - name: Decode Keystore (Only for Release builds)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PATH: mobile/android/app/release-key.jks
+        run: |
+          if [ ! -z "$KEYSTORE_B64" ]; then
+            echo $KEYSTORE_B64 | base64 --decode > $KEYSTORE_PATH
+            echo "Keystore decoded successfully."
+          else
+            echo "Warning: No keystore found in secrets. Building unsigned APK."
+          fi
+
+      - name: Build Release APK
+        run: |
+          cd mobile/android
+          ./gradlew assembleRelease
+        env:
+          ORG_GRADLE_PROJECT_releaseStoreFile: ${{ startsWith(github.ref, 'refs/tags/') && 'app/release-key.jks' || '' }}
+          ORG_GRADLE_PROJECT_releaseStorePassword: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ORG_GRADLE_PROJECT_releaseKeyAlias: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ORG_GRADLE_PROJECT_releaseKeyPassword: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+      - name: Upload Artifact (APK)
+        uses: actions/upload-artifact@v4
+        with:
+          name: spotka-android-alpha-${{ github.ref_name }}
+          path: mobile/android/app/build/outputs/apk/release/*.apk
+          retention-days: 30
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: mobile/rust-core/target/aarch64-linux-android/release/libspotka_core.so
-          body: "Alpha Release - Multilingual Support Enabled"
+          files: mobile/android/app/build/outputs/apk/release/*.apk
+          body: |
+            ## Spotka Alpha Release (${{ github.ref_name }})
+            
+            ### Features:
+            - 100% Rust Core (P2P, App-Chain, E2EE)
+            - Reductive Functionalism UI (B&W)
+            - Multi-language support (i18n)
+            - Adaptive Dictionary Compression
+            
+            ### Installation:
+            Download the `.apk` file and install it on your Android device.
+            *Note: This is an alpha version. Data loss may occur.*
+          draft: false
+          prerelease: true

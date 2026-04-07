@@ -1,0 +1,191 @@
+// mobile/rust-core/src/ui/create_meeting.slint
+// Create Meeting View: Minimalist, B&W, Privacy-Focused.
+// Features: CTS Validation, Guest Count, Data Overhead Warning, SMS Rescue Info.
+// Year: 2026 | Rust Edition: 2024
+
+import { VerticalLayout, HorizontalLayout, Text, TextInput, Button, CheckBox, Spinner } from "std-widgets.slint";
+export component CreateMeetingWindow inherits Window {
+    width: 400px;
+    height: 800px;
+    title: tr("KEY_CREATE_MEETING_TITLE");
+
+    // --- Properties (Bound to Rust Logic) ---
+    in-out property <string> main_tag_input;
+    in-out property <string> additional_tags_input;
+    in-out property <int> guest_count;
+    in-out property <int> invited_users_count;
+    in-out property <string> location_street; // Only street name, no number
+    in-out property <bool> is_gps_used;
+    in-out property <bool> has_active_dictionary;
+    in-out property <string> cts_error_key; // Error key from Rust parser
+    in-out property <bool> is_form_valid;
+    in-out property <float> data_overhead_percent; // e.g., 3.0 for 300%
+    
+    // For "SMS Rescue" feature info
+    in-out property <string> cancellation_window_info; // e.g., "You have 15m to cancel safely"
+
+    // --- UI State ---
+    property <bool> show_keyboard: false;
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 10px;
+
+        // 1. Header
+        Text {
+            text: tr("KEY_NEW_MEETUP");
+            font-size: 24px;
+            font-weight: bold;
+            horizontal-alignment: center;
+        }
+
+        // 2. Main Goal (Positive Tag) - REQUIRED
+        Text {
+            text: tr("KEY_MAIN_GOAL_LABEL");
+            font-size: 14px;
+        }
+        TextInput {
+            text <=> main_tag_input;
+            placeholder-text: tr("KEY_PLACEHOLDER_MAIN_TAG"); // e.g., "coffee", "walk"
+            horizontal-alignment: center;
+            font-size: 18px;
+            // No colors, just border thickness for focus
+            border-width: 2px; 
+        }
+
+        // 3. Additional Tags (CTS Logic)
+        Text {
+            text: tr("KEY_ADDITIONAL_TAGS_LABEL");
+            font-size: 14px;
+        }
+        TextInput {
+            text <=> additional_tags_input;
+            placeholder-text: tr("KEY_PLACEHOLDER_ADD_TAGS"); // e.g., "0rain 1dog"
+            horizontal-alignment: center;
+            enabled: has_active_dictionary || count_words(additional_tags_input) <= 3;
+        }
+        
+        // Dynamic Warnings based on Dictionary Status
+        if !has_active_dictionary && count_words(additional_tags_input) > 3:
+            Text {
+                text: tr("KEY_WARN_TAG_LIMIT_TEXT_MODE");
+                color: #000000; // Black text
+                font-size: 12px;
+                font-style: italic;
+            }
+        
+        if !has_active_dictionary:
+            HorizontalLayout {
+                alignment: center;
+                Text {
+                    text: tr("KEY_WARN_DATA_OVERHEAD");
+                    font-size: 12px;
+                    font-weight: bold;
+                }
+                Text {
+                    text: format("+{}%", data_overhead_percent * 100);
+                    font-size: 12px;
+                    font-weight: bold;
+                }
+            }
+
+        // Error Display (Keys only, translated by logic)
+        if cts_error_key != "":
+            Text {
+                text: cts_error_key; // In real app, this would be tr(cts_error_key) if Slint supported dynamic keys fully, else mapped in Rust
+                color: #000000;
+                font-size: 12px;
+                font-weight: bold;
+                // Icon for error (e.g., crossed circle) could go here
+            }
+
+        // 4. Attendees Section
+        HorizontalLayout {
+            spacing: 20px;
+            // Guests (Non-app users)
+            VerticalLayout {
+                Text { text: tr("KEY_GUESTS_COUNT"); font-size: 12px; }
+                SpinBox {
+                    value <=> guest_count;
+                    min-value: 0;
+                    max-value: 20;
+                }
+            }
+            // Invited Users (App users from contacts)
+            VerticalLayout {
+                Text { text: tr("KEY_INVITED_USERS_COUNT"); font-size: 12px; }
+                SpinBox {
+                    value <=> invited_users_count;
+                    min-value: 0;
+                    max-value: 50;
+                }
+            }
+        }
+
+        // 5. Location (Privacy Preserving)
+        Text {
+            text: tr("KEY_LOCATION_LABEL");
+            font-size: 14px;
+        }
+        TextInput {
+            text <=> location_street;
+            placeholder-text: tr("KEY_PLACEHOLDER_STREET_ONLY"); // e.g., "Marszałkowska St."
+            horizontal-alignment: center;
+            enabled: !is_gps_used;
+        }
+        CheckBox {
+            text: tr("KEY_USE_GPS_NOW");
+            checked <=> is_gps_used;
+        }
+        if is_gps_used:
+            Text {
+                text: tr("KEY_GPS_WARNING_STREET_ONLY");
+                font-size: 10px;
+                font-style: italic;
+            }
+
+        // 6. SMS Rescue / Cancellation Info
+        HorizontalLayout {
+            alignment: center;
+            spacing: 5px;
+            // Icon: Clock or Shield
+            Text {
+                text: tr("KEY_SAFE_CANCELLATION_WINDOW");
+                font-size: 11px;
+            }
+            Text {
+                text: cancellation_window_info;
+                font-size: 11px;
+                font-weight: bold;
+            }
+        }
+
+        // 7. Action Buttons
+        HorizontalLayout {
+            spacing: 20px;
+            padding: 20px;
+            
+            Button {
+                text: tr("KEY_CANCEL");
+                clicked => {
+                    // Close window
+                }
+            }
+            
+            Button {
+                text: tr("KEY_PUBLISH_MEETUP");
+                enabled: is_form_valid && main_tag_input.length() > 0;
+                clicked => {
+                    // Emit signal to Rust to create meeting
+                }
+                // Visual cue for disabled state via border/style, not color
+            }
+        }
+    }
+
+    // Helper function to count words (pseudo-logic for Slint)
+    fn count_words(text: string) => int {
+        // Actual implementation in Rust binding
+        return 0; 
+    }
+}

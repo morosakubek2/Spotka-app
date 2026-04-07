@@ -1,0 +1,161 @@
+// mobile/rust-core/src/ui/main_window.slint
+// Main Application Window: Reductive Functionalism Style (B&W Only).
+// Architecture: Language-Agnostic (Keys only), Modular Components.
+// Year: 2026 | Slint Version: 1.6+
+
+import { TabWidget, VerticalLayout, HorizontalLayout, Text, Button, Rectangle } from "std-widgets.slint";
+import { NavBar } from "components/nav_bar.slint";
+import { MeetingsList } from "meetings_list.slint";
+import { RelationsView } from "relations.slint";
+import { PingView } from "ping.slint";
+import { HelpView } from "help.slint";
+import { SettingsView } from "settings.slint";
+
+// --- Global Styles (Reductive Functionalism) ---
+// No colors, only Black and White. Contrast via line weight and patterns.
+global-style := default;
+
+export component MainWindow inherits Window {
+    width: 400px;
+    height: 800px;
+    title: "Spotka Alpha"; // This title is also translated in native code usually, but kept simple here.
+
+    // --- State Properties ---
+    in-out property <string> current_language: "en";
+    in-out property <int> active_tab: 0;
+    in-out property <bool> is_loading: false;
+    in-out property <string> loading_message_key: "MSG_LOADING_INIT";
+
+    // Callbacks to Rust Core
+    callback request_language_change(string) -> ();
+    callback request_tab_change(int) -> ();
+    callback request_refresh_data() -> ();
+
+    // --- Main Layout ---
+    VerticalLayout {
+        alignment: center;
+        spacing: 0px;
+
+        // Top Bar (Minimalist, B&W)
+        Rectangle {
+            height: 50px;
+            width: 100%;
+            background: #FFFFFF;
+            border-bottom-width: 2px;
+            border-bottom-color: #000000;
+            
+            HorizontalLayout {
+                alignment: center;
+                Text {
+                    text: tr("KEY_APP_TITLE"); // Translated via key
+                    font-size: 20px;
+                    font-weight: bold;
+                    color: #000000;
+                }
+                // Optional: Status indicator (e.g., P2P connected)
+                Rectangle {
+                    width: 10px;
+                    height: 10px;
+                    background: is_loading ? #FFFFFF : #000000; // Blinking or solid
+                    border-width: 1px;
+                    border-color: #000000;
+                }
+            }
+        }
+
+        // Content Area (Dynamic based on active_tab)
+        // Using a stack-like approach for performance, or conditional visibility
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            background: #FFFFFF;
+            clip: true;
+
+            // Tab 0: SPOTKANIA
+            MeetingsList {
+                visible: active_tab == 0;
+                width: parent.width;
+                height: parent.height;
+                language <=> current_language;
+                request_refresh_data <=> root.request_refresh_data;
+            }
+
+            // Tab 1: RELACJE
+            RelationsView {
+                visible: active_tab == 1;
+                width: parent.width;
+                height: parent.height;
+                language <=> current_language;
+            }
+
+            // Tab 2: PING
+            PingView {
+                visible: active_tab == 2;
+                width: parent.width;
+                height: parent.height;
+                language <=> current_language;
+            }
+
+            // Tab 3: HELP (?)
+            HelpView {
+                visible: active_tab == 3;
+                width: parent.width;
+                height: parent.height;
+                language <=> current_language;
+            }
+
+            // Tab 4: SETTINGS
+            SettingsView {
+                visible: active_tab == 4;
+                width: parent.width;
+                height: parent.height;
+                language <=> current_language;
+                on_language_changed: {
+                    root.request_language_change(language);
+                }
+            }
+        }
+
+        // Bottom Navigation Bar (Custom Component for B&W Style)
+        NavBar {
+            active_index <=> active_tab;
+            language <=> current_language;
+            on_tab_selected(index) => {
+                root.request_tab_change(index);
+            }
+        }
+    }
+
+    // --- Loading Overlay ---
+    // Shown when data is being fetched from P2P/DB
+    if is_loading {
+        Rectangle {
+            background: #FFFFFF; // Opaque white overlay
+            width: parent.width;
+            height: parent.height;
+            z-order: 100;
+            
+            VerticalLayout {
+                alignment: center;
+                spacing: 20px;
+                
+                // Simple B&W Spinner (Geometric)
+                Rectangle {
+                    width: 40px;
+                    height: 40px;
+                    background: transparent;
+                    border-width: 4px;
+                    border-color: #000000;
+                    border-radius: 20px;
+                    // Animation logic would go here in Rust or advanced Slint
+                }
+
+                Text {
+                    text: tr(loading_message_key);
+                    font-size: 14px;
+                    color: #000000;
+                }
+            }
+        }
+    }
+}

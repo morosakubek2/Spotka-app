@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Basic App Info -->
+    <key>CFBundleDevelopmentRegion</key>
+    <string>$(DEVELOPMENT_LANGUAGE)</string>
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIdentifier</key>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>$(PRODUCT_NAME)</string>
+    <key>CFBundlePackageType</key>
+    <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    
+    <!-- Launch Screen -->
+    <key>UILaunchStoryboardName</key>
+    <string>LaunchScreen</string>
+    
+    <!-- Main Storyboard (if used, otherwise empty for SwiftUI) -->
+    <key>UISceneStoryboardFile</key>
+    <string>Main</string>
+    
+    <!-- Required Scene Configuration (iOS 13+) -->
+    <key>UISceneConfigurations</key>
+    <dict>
+        <key>UIWindowSceneSessionRoleApplication</key>
+        <array>
+            <dict>
+                <key>UISceneConfigurationName</key>
+                <string>Default Configuration</string>
+                <key>UISceneDelegateClassName</key>
+                <string>$(PRODUCT_MODULE_NAME).SceneDelegate</string>
+            </dict>
+        </array>
+    </dict>
+
+    <!-- --------------------------------------------------------- -->
+    <!-- PRIVACY & PERMISSIONS (Required for App Store Review)     -->
+    <!-- --------------------------------------------------------- -->
+    
+    <!-- Location: Required for Geofencing and Meetup Discovery -->
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>Spotka needs your location to find meetups nearby and enforce the Storage Radius.</string>
+    <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+    <string>Spotka uses location in the background to notify you of nearby meetups (optional).</string>
+    <key>NSLocationTemporaryUsageDescriptionDictionary</key>
+    <dict>
+        <key>PreciseLocation</key>
+        <string>We need precise location to verify your presence at a meetup.</string>
+    </dict>
+
+    <!-- Bluetooth: Required for P2P Discovery (BLE) and Ping -->
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Spotka uses Bluetooth to discover nearby users and exchange keys offline.</string>
+    <key>NSBluetoothPeripheralUsageDescription</key>
+    <string>Spotka uses Bluetooth to connect to nearby devices for peer-to-peer communication.</string>
+
+    <!-- Camera: Required for QR Code Scanning in Ping Mode -->
+    <key>NSCameraUsageDescription</key>
+    <string>Spotka needs camera access to scan QR codes for pairing with other users.</string>
+
+    <!-- Local Network: Required for mDNS/TCP discovery on WiFi -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Spotka uses the local network to discover peers and sync data via WiFi.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_spotka._tcp</string>
+        <string>_p2p._udp</string>
+    </array>
+
+    <!-- Contacts: Optional, for labeling known phone numbers -->
+    <key>NSContactsUsageDescription</key>
+    <string>Spotka accesses contacts to display names for verified phone numbers.</string>
+
+    <!-- --------------------------------------------------------- -->
+    <!-- BACKGROUND MODES                                          -->
+    <!-- --------------------------------------------------------- -->
+    <key>UIBackgroundModes</key>
+    <array>
+        <!-- For BLE Advertising/Scanning in background -->
+        <string>bluetooth-central</string>
+        <string>bluetooth-peripheral</string>
+        <!-- For Location updates (Geofencing) -->
+        <string>location</string>
+        <!-- For Fetching data in background -->
+        <string>fetch</string>
+        <!-- For Push Notifications (Wake up) -->
+        <string>remote-notification</string>
+    </array>
+
+    <!-- --------------------------------------------------------- -->
+    <!-- DEEP LINKING (URL Schemes)                                -->
+    <!-- --------------------------------------------------------- -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>CFBundleURLName</key>
+            <string>com.spotka.app</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>spotka</string>
+            </array>
+        </dict>
+    </array>
+
+    <!-- --------------------------------------------------------- -->
+    <!-- SECURITY & CONFIGURATION                                  -->
+    <!-- --------------------------------------------------------- -->
+    
+    <!-- Disable iCloud Backup for App Data (Security/Privacy) -->
+    <key>UIFileSharingEnabled</key>
+    <false/>
+    <key>LSSupportsOpeningDocumentsInPlace</key>
+    <false/>
+    
+    <!-- ATS (App Transport Security) - Allow local/clear text if needed for dev -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <false/>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
+
+    <!-- Support Dark/Light Mode (Reductive Functionalism) -->
+    <key>UIUserInterfaceStyle</key>
+    <string>Automatic</string>
+
+</dict>
+</plist>

@@ -1,0 +1,28 @@
+{
+  "language": "pl",
+  "keys": {
+    "KEY_APP_TITLE": "Spotka",
+    "KEY_TAB_MEETINGS": "Spotkania",
+    "KEY_TAB_RELATIONS": "Relacje",
+    "KEY_TAB_PING": "Ping",
+    "KEY_TAB_HELP": "?",
+    "KEY_TAB_SETTINGS": "Ustawienia",
+    
+    "KEY_PING_MODE_ORGANIZER": "TRYB: ORGANIZATOR",
+    "KEY_PING_MODE_SCANNER": "TRYB: SKANER",
+    "KEY_PING_TOGGLE_MODE": "PRZEŁĄCZ",
+    
+    "KEY_PING_ORGANIZER_INSTRUCTION": "Pokaż ten kod uczestnikom do zeskanowania. Kod wygaśnie po czasie minimalnego pobytu.",
+    "KEY_PING_QR_VALID_FOR": "Ważny przez: {} s",
+    "KEY_PING_QR_EXPIRES_INFO": "Po tym czasie kod stanie się nieważny.",
+    "KEY_PING_START_BROADCAST": "GENERUJ KOD",
+    
+    "KEY_PING_SCAN_AREA": "OBSZAR SKANOWANIA",
+    "KEY_PING_SCAN_INSTRUCTION": "Skieruj kamerę na kod QR organizatora lub zbliż urządzenie NFC.",
+    "KEY_PING_SYNC_DICT_LABEL": "Synchronizuj słownik (Beta)",
+    "KEY_ON": "TAK",
+    "KEY_OFF": "NIE",
+    "KEY_PING_ACTION_SCAN": "SKANUJ TERAZ",
+    "KEY_PING_NFC_HINT": "Upewnij się, że NFC jest włączone."
+  }
+}

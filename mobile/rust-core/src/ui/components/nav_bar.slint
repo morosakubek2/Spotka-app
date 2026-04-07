@@ -1,0 +1,203 @@
+// mobile/rust-core/src/ui/components/nav_bar.slint
+// Bottom Navigation Bar: Main app navigation.
+// Design: Reductive Functionalism (B&W, geometric icons).
+// Features: Premium indicator, Network status, Ghost mode warning, A11y.
+// Year: 2026 | Slint Version: 1.6+
+
+import { Rectangle, Text, HorizontalLayout, VerticalLayout, Button } from "std-widgets.slint";
+
+// --- Enum for Active Tab ---
+enum TabId {
+    Meetings,
+    Relations,
+    Ping,
+    Help,
+    Settings
+}
+
+// --- Component: NavButton ---
+// Reusable button for each tab item
+component NavButton {
+    in property <string> icon_glyph; // Simple geometric char or SVG path ref
+    in property <string> label_key;  // Translation key e.g., "KEY_NAV_MEETINGS"
+    in property <bool> is_active;
+    in property <bool> is_disabled;
+    
+    signal clicked();
+
+    width: 60px;
+    height: 50px;
+
+    Button {
+        background: transparent;
+        border-width: 0px;
+        width: 100%;
+        height: 100%;
+        enabled: !is_disabled;
+        clicked => root.clicked();
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 4px;
+
+            // Icon Area
+            Rectangle {
+                width: 24px;
+                height: 24px;
+                background: is_active ? #000000 : transparent;
+                border-color: is_active ? #000000 : #555555;
+                border-width: 2px;
+                
+                // Placeholder for actual icon rendering (glyphs/shapes)
+                // In real app, this would be an Image or VectorPath
+                Text {
+                    text: icon_glyph;
+                    color: is_active ? #ffffff : #000000;
+                    font-size: 16px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
+                }
+            }
+
+            // Label
+            Text {
+                text: tr(label_key);
+                font-size: 10px;
+                color: is_active ? #000000 : #555555;
+                font-weight: is_active ? bold : normal;
+                horizontal-alignment: center;
+            }
+        }
+    }
+}
+
+// --- Main NavBar Component ---
+export component NavBar {
+    in property <TabId> active_tab;
+    in property <bool> is_premium_user;
+    in property <bool> is_network_connected;
+    in property <bool> is_ghost_mode_active;
+    
+    signal tab_changed(TabId new_tab);
+
+    height: 60px;
+    background: #ffffff;
+    border-top-color: #000000;
+    border-top-width: 1px;
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        alignment: center;
+        spacing: 0px; // Distribute evenly
+
+        // 1. SPOTKANIA (Meetings)
+        NavButton {
+            icon_glyph: "●"; // Circle representing meetup/location
+            label_key: "KEY_NAV_MEETINGS";
+            is_active: root.active_tab == TabId.Meetings;
+            clicked => root.tab_changed(TabId.Meetings);
+        }
+
+        // 2. RELACJE (Relations)
+        NavButton {
+            icon_glyph: "∞"; // Infinity loop representing Web of Trust
+            label_key: "KEY_NAV_RELATIONS";
+            is_active: root.active_tab == TabId.Relations;
+            clicked => root.tab_changed(TabId.Relations);
+        }
+
+        // 3. PING (Center, slightly emphasized)
+        NavButton {
+            icon_glyph: "◎"; // Concentric circles for signal/ping
+            label_key: "KEY_NAV_PING";
+            is_active: root.active_tab == TabId.Ping;
+            // Never disabled, core functionality
+            clicked => root.tab_changed(TabId.Ping);
+        }
+
+        // 4. POMOC (?)
+        NavButton {
+            icon_glyph: "?";
+            label_key: "KEY_NAV_HELP";
+            is_active: root.active_tab == TabId.Help;
+            clicked => root.tab_changed(TabId.Help);
+        }
+
+        // 5. USTAWIENIA (Settings)
+        NavButton {
+            icon_glyph: "⚙"; // Gear
+            label_key: "KEY_NAV_SETTINGS";
+            is_active: root.active_tab == TabId.Settings;
+            clicked => root.tab_changed(TabId.Settings);
+        }
+    }
+
+    // --- Overlays / Indicators ---
+
+    // 1. Premium Indicator (Small star/badge near Settings or top right)
+    if (root.is_premium_user) {
+        Rectangle {
+            x: parent.width - 40px;
+            y: 5px;
+            width: 15px;
+            height: 15px;
+            background: #000000;
+            radius: 8px; // Circle
+            z-order: 10;
+            
+            Text {
+                text: "★";
+                color: #ffffff;
+                font-size: 10px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
+    }
+
+    // 2. Network Status (Small dot near Meetings or left)
+    Rectangle {
+        x: 5px;
+        y: 5px;
+        width: 8px;
+        height: 8px;
+        background: root.is_network_connected ? #000000 : #555555;
+        radius: 4px;
+        z-order: 10;
+        // If disconnected, could blink or be hollow
+        border-color: root.is_network_connected ? transparent : #000000;
+        border-width: root.is_network_connected ? 0px : 1px;
+    }
+
+    // 3. Ghost Mode Warning (Subtle eye icon crossed out)
+    if (root.is_ghost_mode_active) {
+        Rectangle {
+            x: 40px;
+            y: 5px;
+            width: 15px;
+            height: 15px;
+            background: transparent;
+            border-color: #000000;
+            border-width: 1px;
+            border-style: dashed; // Dashed to indicate "hidden/temporary"
+            radius: 2px;
+            z-order: 10;
+            
+            Text {
+                text: "👁"; // Eye symbol (or custom glyph)
+                color: #000000;
+                font-size: 10px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+                opacity: 0.7;
+            }
+        }
+    }
+}

@@ -1,0 +1,172 @@
+// mobile/rust-core/src/ui/help.slint
+// Help & Wiki Module: Dynamic Content, Anti-Social Philosophy, Legal Links.
+// Design: Reductive Functionalism (B&W, high contrast, text-focused).
+// Year: 2026 | Slint Version: 1.6+
+
+import { VerticalLayout, HorizontalLayout, Text, Button, ScrollView, Rectangle } from "std-widgets.slint";
+
+// --- Component: Help Section Card ---
+// A reusable card for each help topic with a bold header and wrapped text.
+component HelpSection {
+    in property <string> title_key;   // e.g., "KEY_HELP_PHILOSOPHY"
+    in property <string> content_key; // e.g., "KEY_HELP_PHILOSOPHY_TEXT"
+    
+    min-height: 100px;
+    
+    Rectangle {
+        background: #ffffff;
+        border-color: #000000;
+        border-width: 1px;
+        width: 100%;
+        height: 100%;
+        
+        VerticalLayout {
+            padding: 15px;
+            spacing: 10px;
+            
+            Text {
+                text: tr(title_key);
+                font-size: 18px;
+                font-weight: bold;
+                color: #000000;
+            }
+            
+            Text {
+                text: tr(content_key);
+                font-size: 14px;
+                color: #000000;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
+// --- Main Help Window ---
+export component HelpWindow inherits Window {
+    width: 400px;
+    height: 700px;
+    title: tr("KEY_HELP_TITLE");
+
+    VerticalLayout {
+        padding: 0px;
+        spacing: 0px;
+
+        // Header
+        Rectangle {
+            background: #000000;
+            height: 60px;
+            width: 100%;
+            
+            Text {
+                text: tr("KEY_HELP_TITLE");
+                color: #ffffff;
+                font-size: 20px;
+                font-weight: bold;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
+
+        // Scrollable Content Area
+        ScrollView {
+            VerticalLayout {
+                padding: 20px;
+                spacing: 20px;
+                width: 100%;
+
+                // 1. Philosophy Section (Crucial for "Anti-Social" app)
+                HelpSection {
+                    title_key: "KEY_HELP_PHILOSOPHY";
+                    content_key: "KEY_HELP_PHILOSOPHY_TEXT"; 
+                    // Text explains: "No chats, no feeds, just physical meetups."
+                }
+
+                // 2. How to Start (Physical Connection)
+                HelpSection {
+                    title_key: "KEY_HELP_FIRST_STEP";
+                    content_key: "KEY_HELP_FIRST_STEP_TEXT";
+                    // Text explains: "You must meet physically to pair via QR/NFC."
+                }
+
+                // 3. Reputation & App-Chain
+                HelpSection {
+                    title_key: "KEY_HELP_REPUTATION";
+                    content_key: "KEY_HELP_REPUTATION_TEXT";
+                    // Text explains: "Reputation is stored on App-Chain, cannot be faked."
+                }
+
+                // 4. Data Loss & Recovery (Critical Warning)
+                Rectangle {
+                    background: #f0f0f0; // Slightly darker to indicate warning
+                    border-color: #000000;
+                    border-width: 2px; // Thicker border for emphasis
+                    width: 100%;
+                    min-height: 120px;
+                    
+                    VerticalLayout {
+                        padding: 15px;
+                        spacing: 10px;
+                        
+                        Text {
+                            text: tr("KEY_HELP_DATA_LOSS_TITLE");
+                            font-size: 18px;
+                            font-weight: bold;
+                            color: #000000;
+                        }
+                        Text {
+                            text: tr("KEY_HELP_DATA_LOSS_TEXT");
+                            font-size: 14px;
+                            color: #000000;
+                            wrap: word-wrap;
+                            // Text: "If you lose your phone without backup, your identity is gone forever."
+                        }
+                    }
+                }
+
+                // 5. Developer Tools / Bug Report
+                HelpSection {
+                    title_key: "KEY_HELP_BUG_REPORT";
+                    content_key: "KEY_HELP_BUG_REPORT_TEXT";
+                }
+
+                // Action Buttons
+                HorizontalLayout {
+                    spacing: 15px;
+                    alignment: center;
+                    
+                    Button {
+                        text: tr("KEY_HELP_EXPORT_LOGS");
+                        clicked => {
+                            // Trigger Rust logic to dump logs to file
+                        }
+                    }
+                    
+                    Button {
+                        text: tr("KEY_HELP_PRIVACY_POLICY");
+                        clicked => {
+                            // Open external URL to Privacy Policy
+                        }
+                    }
+                }
+                
+                Button {
+                    text: tr("KEY_HELP_TERMS_OF_SERVICE");
+                    clicked => {
+                        // Open external URL to ToS
+                    }
+                }
+
+                // Version Info
+                Text {
+                    text: `Spotka Alpha v0.1.0`;
+                    font-size: 12px;
+                    color: #666666;
+                    horizontal-alignment: center;
+                    width: 100%;
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,234 @@
+// mobile/rust-core/src/ui/components/meeting_card.slint
+// Meeting Card Component: The core unit of the "Meetings" list.
+// Design: Reductive Functionalism (B&W, high contrast, geometric).
+// Structure: 5 Blocks (Tags, Premium Info, Participants, Time, Actions).
+// Year: 2026 | Slint Version: 1.6+
+
+import { VerticalLayout, HorizontalLayout, Text, Button, Rectangle, Image } from "std-widgets.slint";
+import "tag_badge.slint";
+
+// --- Data Structures (Mirroring Rust) ---
+struct Participant {
+    name: string,
+    is_guest: bool,
+    has_app: bool
+}
+
+struct MeetingData {
+    id: string,
+    tags: [string], // Simplified for UI demo, real app uses CtsTag structs
+    is_premium_venue: bool,
+    venue_name: string,
+    organizer_name: string,
+    distance_km: float,
+    participants: [Participant],
+    start_time: string, // "18:30"
+    duration_mins: int,
+    user_is_organizer: bool,
+    user_has_premium: bool
+}
+
+// --- Helper: Reputation Dots (●●●○○) ---
+component ReputationDisplay {
+    in property <int> score; // 0 to 5
+    in property <string> label; // For accessibility
+
+    HorizontalLayout {
+        spacing: 2px;
+        accessible-name: label;
+        
+        // Generate 5 dots manually or via loop logic if supported
+        // Here we simulate 5 dots based on score
+        for i in range(5):
+            Rectangle {
+                width: 8px; height: 8px;
+                radius: 4px;
+                background: i < score ? #000000 : transparent;
+                border-color: #000000;
+                border-width: 1px;
+            }
+    }
+}
+
+// --- Main Component: MeetingCard ---
+export component MeetingCard {
+    in property <MeetingData> data;
+    in property <bool> is_expanded: false; // For showing map/details on tap
+    
+    width: 100%;
+    height: is_expanded ? 250px : 180px; // Dynamic height
+    
+    // Accessibility
+    accessible-name: `Meeting: ${data.tags[0]} at ${data.start_time}`;
+
+    Rectangle {
+        background: #ffffff;
+        border-color: #000000;
+        border-width: 1px;
+        width: 100%;
+        height: 100%;
+        
+        VerticalLayout {
+            padding: 10px;
+            spacing: 8px;
+
+            // --- BLOCK 1: Header (Tags, Rep, Distance) ---
+            HorizontalLayout {
+                alignment: center;
+                spacing: 4px; // Exact 4dp spacing as requested
+                
+                // Tags (Horizontal, wrapped if needed, but usually single line)
+                for tag in data.tags:
+                    TagBadge {
+                        label: tag;
+                        status: TagStatus.Positive; // Simplified for demo
+                        is_compacted: false;
+                        is_official: true;
+                    }
+
+                // Spacer
+                Rectangle { width: 4px; height: 1px; background: transparent; }
+
+                // Reputation
+                ReputationDisplay {
+                    score: 3; // Mock value
+                    label: "Organizer reputation: 3 out of 5";
+                }
+
+                // Distance (Right aligned)
+                Text {
+                    text: `${data.distance_km} km`;
+                    font-weight: bold;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                    // Pushes to the right
+                    width: 100%; 
+                }
+            }
+
+            // --- BLOCK 2: Premium Venue Info (Conditional) ---
+            // Only visible if User is Premium AND Venue is Premium
+            if (data.user_has_premium && data.is_premium_venue) {
+                Rectangle {
+                    background: #f0f0f0; // Light gray distinction
+                    border-color: #000000;
+                    border-width: 1px;
+                    border-style: dashed;
+                    width: 100%;
+                    height: 40px;
+                    
+                    VerticalLayout {
+                        padding: 4px;
+                        Text {
+                            text: data.venue_name;
+                            font-weight: bold;
+                            font-size: 16px;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: `Organized by: ${data.organizer_name}`;
+                            font-size: 12px;
+                            font-style: italic;
+                        }
+                    }
+                }
+            } else {
+                // Placeholder to maintain layout consistency if needed, or just collapse
+                Rectangle { width: 100%; height: 0px; background: transparent; }
+            }
+
+            // --- BLOCK 3: Participants "Ciurkiem" (Inline List) ---
+            Rectangle {
+                background: transparent;
+                border-color: #cccccc;
+                border-width: 1px;
+                width: 100%;
+                height: 100%; // Fill available space
+                
+                Text {
+                    // Logic to join names: "Tomek P. (+2), Anna K., Marek L."
+                    // In real Rust binding, this string is pre-formatted
+                    text: "Tomek P. (+2), Anna K., Marek L."; 
+                    wrap: word-wrap; // Crucial for "ciurkiem" wrapping
+                    color: #000000;
+                    font-size: 14px;
+                    selectable: false; // Prevent copying/scraping
+                    vertical-alignment: top;
+                }
+            }
+
+            // --- BLOCK 4: Time Details ---
+            HorizontalLayout {
+                alignment: center;
+                spacing: 4px;
+                
+                Text {
+                    text: data.start_time; // "18:30"
+                    font-size: 18px;
+                    font-weight: bold;
+                }
+                
+                // Separator Dot
+                Text {
+                    text: "•";
+                    font-size: 18px;
+                    color: #000000;
+                }
+
+                Text {
+                    text: `min. ${data.duration_mins} min`;
+                    font-size: 14px;
+                }
+            }
+
+            // --- BLOCK 5: Actions (Touch Targets 44dp) ---
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: center;
+                
+                Button {
+                    text: "Dołącz"; // "Join"
+                    min-width: 100px;
+                    min-height: 44px; // Minimum touch target
+                    font-weight: bold;
+                    clicked => {
+                        // Action logic
+                    }
+                }
+
+                Button {
+                    text: "Szczegóły"; // "Details"
+                    min-width: 100px;
+                    min-height: 44px;
+                    clicked => {
+                        // Toggle expand or navigate
+                    }
+                }
+            }
+        }
+    }
+}
+
+// --- Example Usage ---
+/*
+export component TestContainer inherits Window {
+    width: 400px; height: 400px;
+    VerticalLayout {
+        MeetingCard {
+            data: MeetingData {
+                id: "123";
+                tags: ["kino", "rower"];
+                is_premium_venue: true;
+                venue_name: "Kino Muranów";
+                organizer_name: "Jan K.";
+                distance_km: 2.3;
+                participants: [];
+                start_time: "18:30";
+                duration_mins: 45;
+                user_is_organizer: false;
+                user_has_premium: true;
+            };
+        }
+    }
+}
+*/

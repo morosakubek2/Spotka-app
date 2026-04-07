@@ -1,0 +1,334 @@
+// mobile/rust-core/src/ui/settings.slint
+// Settings Module: Full Control over Data, Privacy, Network, and Dictionary.
+// Design: Reductive Functionalism (B&W, High Contrast, Geometric).
+// Features: Dev Mode, Night Mode, Dict Management, Verifiers, Push Config.
+// Year: 2026 | Slint Version: 1.6+
+
+import { VerticalLayout, HorizontalLayout, Text, Button, TextInput, Switch, Slider, Rectangle, ProgressBar } from "std-widgets.slint";
+
+// --- Component: Setting Row ---
+component SettingRow {
+    in property <string> label;
+    in property <string> subtext: "";
+    in property <bool> has_toggle: false;
+    in property <bool> toggle_value: false;
+    in-out property <bool> toggle_changed: false; // Signal helper
+    
+    width: 100%;
+    height: 60px;
+
+    HorizontalLayout {
+        alignment: center-vertical;
+        spacing: 15px;
+        padding: 10px;
+
+        VerticalLayout {
+            alignment: start;
+            spacing: 2px;
+            Text {
+                text: label;
+                font-weight: bold;
+                font-size: 16px;
+                color: #000000;
+            }
+            if (subtext != "") {
+                Text {
+                    text: subtext;
+                    font-size: 12px;
+                    color: #555555;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        if (has_toggle) {
+            Switch {
+                checked: toggle_value;
+                clicked => { root.toggle_changed = !root.toggle_changed; } // Trigger event
+            }
+        }
+    }
+    
+    Rectangle { height: 1px; background: #cccccc; width: 100%; y: 59px; }
+}
+
+// --- Main Settings Window ---
+export component SettingsWindow inherits Window {
+    width: 400px;
+    height: 800px;
+    title: tr("KEY_SETTINGS_TITLE");
+
+    // State Properties (Bound to Rust)
+    in-out property <string> app_version: "0.1.0-alpha";
+    in-out property <string> current_language: "en";
+    in-out property <int> storage_radius_km: 60;
+    in-out property <bool> is_ghost_mode: false;
+    in-out property <bool> is_guardian_mode: false;
+    in-out property <bool> is_night_mode: false;
+    in-out property <bool> is_dev_mode: false;
+    in-out property <int> dev_clicks_count: 0;
+    
+    // Dictionary State
+    in-out property <string> official_dict_version: "1.0";
+    in-out property <bool> is_dict_updating: false;
+    in-out property <string> custom_dicts_count: "0";
+
+    // Battery/Network Stats
+    in-out property <string> data_usage_mb: "0";
+    in-out property <string> battery_impact: "Low";
+
+    // Push Provider
+    in-out property <string> push_provider: "UnifiedPush"; // Options: UnifiedPush, FCM, APNs, None
+
+    // Signals
+    signal check_for_updates();
+    signal update_dictionary();
+    signal export_backup();
+    signal import_backup();
+    signal clear_data();
+    signal manage_verifiers();
+    signal show_legal(legal_type: string);
+    signal toggle_setting(string key, bool value);
+
+    // Hidden Dev Mode Trigger Logic
+    Timer { interval: 3000ms; running: false; triggered => { root.dev_clicks_count = 0; } }
+
+    VerticalLayout {
+        spacing: 10px;
+        padding: 15px;
+        
+        // Header
+        Text {
+            text: tr("KEY_SETTINGS_HEADER");
+            font-size: 24px;
+            font-weight: bold;
+            horizontal-alignment: center;
+            width: 100%;
+        }
+
+        // Scrollable Content
+        ScrollView {
+            vertical-scroll-policy: scroll-always;
+            VerticalLayout {
+                spacing: 15px;
+                padding: 10px;
+
+                // --- SECTION: Appearance & Language ---
+                Text { text: tr("KEY_SECTION_APPEARANCE"); font-weight: bold; font-size: 18px; }
+                
+                SettingRow {
+                    label: tr("KEY_SETTING_NIGHT_MODE");
+                    subtext: tr("KEY_SETTING_NIGHT_MODE_DESC");
+                    has_toggle: true;
+                    toggle_value: is_night_mode;
+                    toggle_changed => { 
+                        is_night_mode = !is_night_mode; 
+                        root.toggle_setting("night_mode", is_night_mode);
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    Text { text: tr("KEY_SETTING_LANGUAGE"); vertical-alignment: center; }
+                    ComboBox {
+                        model: ["English", "Polski", "Esperanto"];
+                        selected-index: 0; // Bound to logic
+                        // on_selectedIndexChanged => ...
+                    }
+                    Button {
+                        text: tr("KEY_SETTING_IMPORT_LANG");
+                        font-size: 12px;
+                        clicked => { /* File picker trigger */ }
+                    }
+                }
+
+                // --- SECTION: Network & Data (Storage Radius) ---
+                Text { text: tr("KEY_SECTION_NETWORK"); font-weight: bold; font-size: 18px; }
+
+                SettingRow {
+                    label: tr("KEY_SETTING_STORAGE_RADIUS");
+                    subtext: `${storage_radius_km} km`;
+                    // Slider handled separately for continuous values
+                }
+                Slider {
+                    minimum-value: 10;
+                    maximum-value: 200;
+                    value: storage_radius_km;
+                    changed => { storage_radius_km = value; root.toggle_setting("radius", true); }
+                }
+                Text {
+                    text: tr("KEY_SETTING_RADIUS_DESC");
+                    font-size: 12px;
+                    font-style: italic;
+                    color: #555555;
+                }
+
+                SettingRow {
+                    label: tr("KEY_SETTING_GHOST_MODE");
+                    subtext: tr("KEY_SETTING_GHOST_MODE_DESC");
+                    has_toggle: true;
+                    toggle_value: is_ghost_mode;
+                    toggle_changed => { 
+                        is_ghost_mode = !is_ghost_mode; 
+                        root.toggle_setting("ghost", is_ghost_mode);
+                    }
+                }
+
+                SettingRow {
+                    label: tr("KEY_SETTING_PUSH_PROVIDER");
+                    subtext: push_provider;
+                    // In real app, this opens a dropdown/modal
+                }
+                Button {
+                    text: tr("KEY_SETTING_CONFIGURE_PUSH");
+                    clicked => { /* Open provider selection */ }
+                }
+
+                // --- SECTION: Guardian & Resources ---
+                Text { text: tr("KEY_SECTION_RESOURCES"); font-weight: bold; font-size: 18px; }
+
+                SettingRow {
+                    label: tr("KEY_SETTING_GUARDIAN_MODE");
+                    subtext: tr("KEY_SETTING_GUARDIAN_MODE_DESC");
+                    has_toggle: true;
+                    toggle_value: is_guardian_mode;
+                    toggle_changed => { 
+                        is_guardian_mode = !is_guardian_mode; 
+                        root.toggle_setting("guardian", is_guardian_mode);
+                    }
+                }
+                
+                HorizontalLayout {
+                    spacing: 10px;
+                    Text { text: tr("KEY_STATS_DATA"); font-size: 14px; }
+                    Text { text: `${data_usage_mb} MB`; font-weight: bold; font-size: 14px; }
+                    Text { text: tr("KEY_STATS_BATTERY"); font-size: 14px; margin-left: 10px; }
+                    Text { text: battery_impact; font-weight: bold; font-size: 14px; }
+                }
+
+                Button {
+                    text: tr("KEY_SETTING_CLEAR_CACHE");
+                    clicked => { root.clear_data(); }
+                }
+
+                // --- SECTION: Dictionaries ---
+                Text { text: tr("KEY_SECTION_DICTIONARIES"); font-weight: bold; font-size: 18px; }
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    Text { text: tr("KEY_SETTING_OFFICIAL_DICT"); font-weight: bold; }
+                    Text { text: `v${official_dict_version}`; font-style: italic; }
+                    Button {
+                        text: tr("KEY_SETTING_CHECK_UPDATE");
+                        enabled: !is_dict_updating;
+                        clicked => { root.check_for_updates(); }
+                    }
+                }
+                if (is_dict_updating) {
+                    ProgressBar { width: 100%; }
+                    Text { text: tr("KEY_SETTING_UPDATING_DICT"); font-size: 12px; }
+                }
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    Text { text: tr("KEY_SETTING_CUSTOM_DICTS"); }
+                    Text { text: custom_dicts_count; font-weight: bold; }
+                    Button {
+                        text: tr("KEY_SETTING_ADD_CUSTOM");
+                        clicked => { /* Import JSON */ }
+                    }
+                }
+
+                // --- SECTION: Security & Identity ---
+                Text { text: tr("KEY_SECTION_SECURITY"); font-weight: bold; font-size: 18px; }
+
+                SettingRow {
+                    label: tr("KEY_SETTING_CONTACT_ACCESS");
+                    subtext: tr("KEY_SETTING_CONTACT_ACCESS_DESC");
+                    has_toggle: true;
+                    toggle_value: true; // Mock state
+                    toggle_changed => { /* Request permission */ }
+                }
+
+                Button {
+                    text: tr("KEY_SETTING_MANAGE_VERIFIERS");
+                    clicked => { root.manage_verifiers(); }
+                }
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    Button {
+                        text: tr("KEY_SETTING_EXPORT_BACKUP");
+                        clicked => { root.export_backup(); }
+                    }
+                    Button {
+                        text: tr("KEY_SETTING_IMPORT_BACKUP");
+                        clicked => { root.import_backup(); }
+                    }
+                }
+
+                Button {
+                    text: tr("KEY_SETTING_FORGET_ME");
+                    // Critical action, usually requires confirmation modal
+                    clicked => { /* Show Warning Modal -> Delete Keys */ }
+                }
+
+                // --- SECTION: Developer Options (Hidden) ---
+                if (is_dev_mode) {
+                    Rectangle {
+                        background: #eeeeee;
+                        border-color: #000000;
+                        border-width: 2px;
+                        padding: 10px;
+                        VerticalLayout {
+                            Text { text: "DEVELOPER MODE"; font-weight: bold; color: #ff0000; }
+                            Button { text: "Simulate Low Battery"; clicked => { /* Mock */ } }
+                            Button { text: "Force P2P Disconnect"; clicked => { /* Mock */ } }
+                            Button { text: "Reset App-Chain Height"; clicked => { /* Mock */ } }
+                            TextInput { placeholder-text: "Debug Command..." }
+                        }
+                    }
+                }
+
+                // --- SECTION: About & Legal ---
+                Text { text: tr("KEY_SECTION_ABOUT"); font-weight: bold; font-size: 18px; }
+                
+                HorizontalLayout {
+                    spacing: 10px;
+                    Text { text: tr("KEY_SETTING_VERSION"); }
+                    Text { text: app_version; font-weight: bold; }
+                    Button {
+                        text: tr("KEY_SETTING_CHECK_APP_UPDATE");
+                        clicked => { root.check_for_updates(); }
+                    }
+                }
+                
+                // Tap area for Dev Mode
+                TouchArea {
+                    clicked => {
+                        root.dev_clicks_count += 1;
+                        if (root.dev_clicks_count >= 7) {
+                            is_dev_mode = true;
+                            root.dev_clicks_count = 0;
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 15px;
+                    Button {
+                        text: tr("KEY_LEGAL_LICENSE");
+                        clicked => { root.show_legal("license"); }
+                    }
+                    Button {
+                        text: tr("KEY_LEGAL_PRIVACY");
+                        clicked => { root.show_legal("privacy"); }
+                    }
+                }
+                
+                // Spacer
+                Rectangle { height: 20px; width: 1px; }
+            }
+        }
+    }
+}

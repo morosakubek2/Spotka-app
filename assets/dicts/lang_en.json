@@ -1,0 +1,28 @@
+{
+  "language": "en",
+  "keys": {
+    "KEY_APP_TITLE": "Spotka",
+    "KEY_TAB_MEETINGS": "Meetings",
+    "KEY_TAB_RELATIONS": "Relations",
+    "KEY_TAB_PING": "Ping",
+    "KEY_TAB_HELP": "?",
+    "KEY_TAB_SETTINGS": "Settings",
+    
+    "KEY_PING_MODE_ORGANIZER": "MODE: ORGANIZER",
+    "KEY_PING_MODE_SCANNER": "MODE: SCANNER",
+    "KEY_PING_TOGGLE_MODE": "TOGGLE",
+    
+    "KEY_PING_ORGANIZER_INSTRUCTION": "Show this code to participants to scan. It expires after the minimum stay duration.",
+    "KEY_PING_QR_VALID_FOR": "Valid for: {} s",
+    "KEY_PING_QR_EXPIRES_INFO": "After this time, the code becomes invalid.",
+    "KEY_PING_START_BROADCAST": "GENERATE CODE",
+    
+    "KEY_PING_SCAN_AREA": "SCAN AREA",
+    "KEY_PING_SCAN_INSTRUCTION": "Point camera at organizer's QR code or tap NFC device.",
+    "KEY_PING_SYNC_DICT_LABEL": "Sync Dictionary (Beta)",
+    "KEY_ON": "ON",
+    "KEY_OFF": "OFF",
+    "KEY_PING_ACTION_SCAN": "SCAN NOW",
+    "KEY_PING_NFC_HINT": "Ensure NFC is enabled."
+  }
+}
