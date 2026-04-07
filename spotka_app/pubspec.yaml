@@ -1,0 +1,66 @@
+name: spotka
+description: Anti-social networking app for planning physical meetings only.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  # Core & State Management
+  flutter_riverpod: ^2.4.9
+  riverpod_annotation: ^2.3.3
+  freezed_annotation: ^2.4.1
+  json_annotation: ^4.8.1
+  
+  # Cryptography & Security (App-Chain, AES-GCM)
+  pointycastle: ^3.7.4
+  encrypt: ^5.0.3
+  sqlcipher_flutter_libs: ^1.0.2
+  flutter_secure_storage: ^9.0.0
+  
+  # P2P Networking
+  dart_lsp: ^1.0.0 # For local discovery
+  web_socket_channel: ^2.4.0
+  mdns: ^2.0.0 # For local network discovery
+  
+  # Database
+  drift: ^2.15.0
+  sqlite3_flutter_libs: ^0.5.18
+  
+  # Geolocation & Geofencing
+  geolocator: ^10.1.0
+  geofencing: ^0.3.0
+  
+  # QR Code (for verification)
+  mobile_scanner: ^3.5.5
+  qr_flutter: ^4.1.0
+  
+  # Biometrics (Premium)
+  local_auth: ^2.1.7
+  
+  # UI & Utilities
+  cupertino_icons: ^1.0.6
+  go_router: ^13.1.0
+  intl: ^0.18.1
+  logger: ^2.0.2+1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.1
+  build_runner: ^2.4.8
+  freezed: ^2.4.6
+  json_serializable: ^6.7.1
+  riverpod_generator: ^2.3.9
+  drift_dev: ^2.15.0
+
+flutter:
+  uses-material-design: true
+  
+  assets:
+    - assets/icons/
+    - assets/images/
