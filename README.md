@@ -1,0 +1,2 @@
+# Spotka-app
+# Spotka-app
