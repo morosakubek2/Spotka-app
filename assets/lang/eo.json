@@ -1,0 +1,22 @@
+{
+  "app_name": "Spotka",
+  "nav_meetings": "RENKONTOJ",
+  "nav_relations": "RILATOJ",
+  "nav_ping": "PING",
+  "nav_help": "?",
+  "nav_settings": "AGORDOJ",
+  "meeting_create_title": "Nova Renkonto",
+  "meeting_tag_placeholder": "Pozitiva etikedo (ekz. kino, kuri)",
+  "meeting_guests_label": "Gastoj (sen apo):",
+  "meeting_publish_btn": "PUBLIKIGI",
+  "meeting_data_overhead": "Averto: Sen vortaro reĝimo pliigas datumojn je 300%",
+  "settings_lang_title": "Lingvo",
+  "settings_storage_radius": "Datuma Radiuso",
+  "settings_guardian_mode": "Reĝima Gardanto de Reto",
+  "relations_empty_hint": "Skenu QR en langeto PING por aldoni kontakton",
+  "ping_scan_title": "Skenu por konekti",
+  "ping_generate_title": "Via Konekta Kodo",
+  "help_wiki_title": "Vikio kaj Helpo",
+  "error_network": "Reta eraro",
+  "error_invalid_tag": "Malvalida formato de etikedo"
+}

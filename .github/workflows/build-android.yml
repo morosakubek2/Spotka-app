@@ -2,64 +2,25 @@ name: Build Android Alpha
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
-  build-android:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-action@stable
         with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Install Rust
-        uses: dtolnay/rust-action@stable
-        with:
-          toolchain: stable
-          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android, i686-linux-android
-
-      - name: Install Android NDK & Tools
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r25c
-          add-to-path: true
-
-      - name: Install cargo-ndk
-        run: cargo install cargo-ndk
-
-      - name: Build Rust Core for Android
-        run: |
-          cd mobile/rust-core
-          cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -o ../android/app/src/main/jniLibs build --release
-
-      - name: Grant execute permission for gradlew
-        run: chmod +x mobile/android/gradlew
-
-      - name: Build Release APK
-        run: |
-          cd mobile/android
-          ./gradlew assembleRelease
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: spotka-android-alpha
-          path: mobile/android/app/build/outputs/apk/release/*.apk
-
-      - name: Create GitHub Release
+          targets: aarch64-linux-android
+      - name: Build Rust
+        run: cd mobile/rust-core && cargo build --release --target aarch64-linux-android
+      - name: Create Release
         uses: softprops/action-gh-release@v1
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: mobile/android/app/build/outputs/apk/release/*.apk
-          body: |
-            ## Spotka Alpha Release
-            - Pełna decentralizacja P2P
-            - Tryb Offline-first
-            - Wsparcie wielojęzyczne
-            - Eksperymentalna wymiana słowników (wyłączone domyślnie)
+          files: mobile/rust-core/target/aarch64-linux-android/release/libspotka_core.so
+          body: "Alpha Release - Multilingual Support Enabled"

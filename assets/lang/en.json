@@ -1,0 +1,22 @@
+{
+  "app_name": "Spotka",
+  "nav_meetings": "MEETINGS",
+  "nav_relations": "RELATIONS",
+  "nav_ping": "PING",
+  "nav_help": "?",
+  "nav_settings": "SETTINGS",
+  "meeting_create_title": "New Meeting",
+  "meeting_tag_placeholder": "Positive tag (e.g. cinema, run)",
+  "meeting_guests_label": "Guests (no app):",
+  "meeting_publish_btn": "PUBLISH",
+  "meeting_data_overhead": "Warning: No dictionary mode increases data size by 300%",
+  "settings_lang_title": "Language",
+  "settings_storage_radius": "Data Radius",
+  "settings_guardian_mode": "Network Guardian Mode",
+  "relations_empty_hint": "Scan QR in PING tab to add your first contact",
+  "ping_scan_title": "Scan to Connect",
+  "ping_generate_title": "Your Connection Code",
+  "help_wiki_title": "Wiki & Help",
+  "error_network": "Network error",
+  "error_invalid_tag": "Invalid tag format"
+}

@@ -1,0 +1,22 @@
+{
+  "app_name": "Spotka",
+  "nav_meetings": "SPOTKANIA",
+  "nav_relations": "RELACJE",
+  "nav_ping": "PING",
+  "nav_help": "?",
+  "nav_settings": "USTAWIENIA",
+  "meeting_create_title": "Nowe Spotkanie",
+  "meeting_tag_placeholder": "Tag pozytywny (np. kino, bieganie)",
+  "meeting_guests_label": "Goście (bez app):",
+  "meeting_publish_btn": "OPUBLIKUJ",
+  "meeting_data_overhead": "Uwaga: Tryb bez słownika zwiększa dane o 300%",
+  "settings_lang_title": "Język",
+  "settings_storage_radius": "Zasięg Danych",
+  "settings_guardian_mode": "Tryb Strażnika Sieci",
+  "relations_empty_hint": "Zeskanuj QR w zakładce PING, aby dodać kontakt",
+  "ping_scan_title": "Skanuj aby połączyć",
+  "ping_generate_title": "Twój Kod Połączenia",
+  "help_wiki_title": "Wiki i Pomoc",
+  "error_network": "Błąd sieci",
+  "error_invalid_tag": "Nieprawidłowy format tagu"
+}
