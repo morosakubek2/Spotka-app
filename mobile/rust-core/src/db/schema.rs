@@ -1,81 +1,91 @@
 // mobile/rust-core/src/db/schema.rs
-// Database Schema Definition for Drift ORM & SQLCipher.
-// Privacy: All PII (Phone Numbers) stored as SHA-256 Hashes only.
+// Database Schema Definitions using Drift ORM + SQLCipher.
+// Architecture: Zero-Knowledge, Encrypted at Rest, Offline-First.
 // Year: 2026 | Rust Edition: 2024
 
 use drift::prelude::*;
 
-/// User Profile Table (Local Cache of Web of Trust)
-/// Stores identity metadata, reputation, and verifier lists.
+// -----------------------------------------------------------------------------
+// 1. USERS TABLE (Local Trust Graph Copy)
+// -----------------------------------------------------------------------------
 #[derive(DataClass, Clone, Debug)]
 pub struct User {
     #[primary_key]
-    pub id: String, // SHA-256 Hash of Phone Number (Never raw number)
+    pub id: String, // SHA256 Hash of Phone Number
     
-    pub display_name: String, // Local alias or name from contacts
-    pub reputation_score: i32, // Calculated score (0-100)
-    pub trust_level: i32, // 0: Unverified, 1: Local, 2: Trusted (Web of Trust)
+    pub display_name: String, // From contacts or self-set alias
+    pub reputation_score: i32, // -100 to +100
+    pub trust_level: i32,      // 0 to 5 (Web of Trust depth)
     
-    pub last_seen: i64, // Timestamp of last activity
     pub public_key_blob: Vec<u8>, // Ed25519 Public Key
+    pub verifier_count: i32,      // How many people vouched for them
     
-    // Web of Trust Metrics
-    pub verifier_count: i32, // Number of independent verifiers
-    pub verifier_list_blob: Vec<u8>, // Serialized list of Verifier PubKeys (for quick lookup)
+    // Privacy & Mode Flags
+    pub is_ghost: bool,           // True if user requested "Ghost Mode"
+    pub last_seen: i64,           // Timestamp
     
-    // Anti-Sybil & Decay
-    pub is_sybil_suspect: bool, // Flagged by consensus algorithm
-    pub last_activity_decay: i64, // Timestamp for reputation decay calculation
+    // Indexing helpers
+    #[index]
+    pub reputation_index: i32,    // Mirror of score for fast sorting
 }
 
-/// Meetup Events Table
-/// Stores local copies of meetup metadata. Payloads are encrypted/hashed.
+// -----------------------------------------------------------------------------
+// 2. MEETINGS TABLE (Public Metadata)
+// -----------------------------------------------------------------------------
 #[derive(DataClass, Clone, Debug)]
 pub struct Meeting {
     #[primary_key]
     pub id: String, // UUID v4
     
-    pub organizer_id: String, // FK to User.id (Hash)
-    
-    // Location (Geohash or Lat/Lon) - Stored encrypted if private
+    pub organizer_phone_hash: String, // Who created it
     pub location_lat: f64,
     pub location_lon: f64,
-    pub location_accuracy_meters: i32,
+    pub location_accuracy_meters: f32, // Fuzzy location precision
     
-    // Time
-    pub start_time: i64, // Unix timestamp
-    pub min_duration_mins: i32, // Required stay for reputation gain
+    pub start_time: i64,
+    pub min_duration_mins: i32,
     
-    // Content (CTS Tags)
-    pub tags_cts: String, // Compact Tag Sequence (e.g., "kino0alkohol")
-    pub tag_indices_blob: Vec<u8>, // Compressed indices if dictionary synced
+    // Tags: Store both raw CTS and compressed version if available
+    pub tags_cts_raw: String,      
+    pub tags_cts_compressed: Option<Vec<u8>>, // Optional binary blob of indices
     
-    // Status & Participants
-    pub status: i32, // 0: Planned, 1: Active, 2: Completed, 3: Cancelled
-    pub guest_count: i32, // Non-app guests (+X)
+    pub status: i32, // 0: Planned, 1: Active, 2: Finished, 3: Cancelled
+    pub guest_count: i32,
     pub invited_users_count: i32,
     
     pub created_at: i64,
-    pub expires_at: i64, // For auto-pruning
+    pub updated_at: i64,
+
+    // Indexes for Geofencing & Time queries
+    #[index]
+    pub geo_time_index_lat: f64; 
+    #[index]
+    pub geo_time_index_lon: f64;
+    #[index]
+    pub status_index: i32;
 }
 
-/// Meeting Participants Junction Table
-/// Tracks attendance and verification status for reputation scoring.
+// -----------------------------------------------------------------------------
+// 3. MEETING PARTICIPANTS (Junction Table)
+// -----------------------------------------------------------------------------
 #[derive(DataClass, Clone, Debug)]
 pub struct MeetingParticipant {
     #[primary_key]
     pub meeting_id: String,
-    #[primary_key]
-    pub user_id: String,
     
-    pub status: i32, // 0: Invited, 1: Confirmed, 2: Present (Scanned), 3: No-Show
+    #[primary_key]
+    pub user_id: String, // Phone Hash
+    
+    pub status: i32, // 0: Invited, 1: Confirmed, 2: Present, 3: No-Show
     pub verification_signature: Option<Vec<u8>>, // Signature proving presence
-    pub check_in_time: Option<i64>,
-    pub check_out_time: Option<i64>,
+    
+    #[index]
+    pub user_status_index: i32;
 }
 
-/// App-Chain Blocks Table (Local Ledger)
-/// Stores the immutable history of trust transactions.
+// -----------------------------------------------------------------------------
+// 4. APP-CHAIN BLOCKS (Local Ledger Copy)
+// -----------------------------------------------------------------------------
 #[derive(DataClass, Clone, Debug)]
 pub struct ChainBlock {
     #[primary_key]
@@ -84,70 +94,90 @@ pub struct ChainBlock {
     pub prev_hash: String,
     pub merkle_root: String,
     pub timestamp: i64,
-    pub validator_id: String, // Hash of Validator's Phone
+    pub validator_id: String, // Phone Hash of Validator
     pub signature: Vec<u8>,
     
-    pub is_pruned: bool, // Flag for soft-deletion (retention policy)
+    // Serialized transactions (binary) to save space
+    pub transactions_blob: Vec<u8>, 
+    
+    // Retention Flag: Keep longer if involves low-rep users (evidence)
+    pub extended_retention: bool, 
+
+    #[index]
+    pub timestamp_index: i64;
 }
 
-/// App-Chain Transactions Table
-/// Individual operations within blocks (TrustIssue, RepUpdate, etc.).
-#[derive(DataClass, Clone, Debug)]
-pub struct ChainTransaction {
-    #[primary_key]
-    pub id: String,
-    
-    pub block_height: i64,
-    pub tx_type: String, // Enum string: "TrustIssue", "TrustRevoke", etc.
-    pub payload_hash: String, // BLAKE3 hash of content
-    pub raw_ Vec<u8>, // Minimal data (e.g., target_user_hash, score_delta)
-    pub signature: Vec<u8>,
-    
-    // Retention Logic: Low-rep users' txs kept longer
-    pub retention_until: i64, 
-}
-
-/// Local Configuration & State
-/// Stores user preferences, keys (encrypted), and sync state.
+// -----------------------------------------------------------------------------
+// 5. LOCAL CONFIG (Key-Value Store)
+// -----------------------------------------------------------------------------
 #[derive(DataClass, Clone, Debug)]
 pub struct LocalConfig {
     #[primary_key]
-    pub key: String, // e.g., "storage_radius_km", "guardian_mode", "language"
-    pub value_blob: Vec<u8>, // Serialized value
+    pub key: String,
+    
+    pub value_blob: Vec<u8>,
+    pub updated_at: i64,
 }
 
-/// Dictionary Entries (For CTS Compression)
-/// Stores local frequency indices for tag compression.
+// Common Keys for LocalConfig:
+// - "config_storage_radius_km" (u32)
+// - "config_ghost_mode" (bool)
+// - "config_language" (String)
+// - "sync_vector_local" (Vec<u64> serialized)
+// - "dict_version_official" (u32)
+
+// -----------------------------------------------------------------------------
+// 6. DICTIONARY CACHE (Dynamic Tag Dictionary)
+// -----------------------------------------------------------------------------
 #[derive(DataClass, Clone, Debug)]
-pub struct DictionaryEntry {
+pub struct DictionaryCache {
     #[primary_key]
-    pub word: String, // The word (e.g., "kino")
+    pub word: String,
     
     pub category: String,
-    pub frequency_index: i32, // Dynamic index assigned by usage frequency
-    pub is_custom: bool, // False = Official, True = Custom/Peer-synced
-    pub last_used: i64, // For LRU eviction of rare tags
+    pub frequency_rank: u32,
+    pub static_index: Option<u8>, // If from official dict
+    pub dynamic_index: Option<u8>, // If assigned locally
+    pub language_code: String,     // e.g., "pl", "en"
+    
+    #[index]
+    pub lang_freq_index: String; // Composite helper
 }
 
-// Register all tables with Drift
+// -----------------------------------------------------------------------------
+// 7. PUSH TOKENS (For Wake-Up Services)
+// -----------------------------------------------------------------------------
+#[derive(DataClass, Clone, Debug)]
+pub struct PushToken {
+    #[primary_key]
+    pub provider: String, // "unifiedpush", "fcm", "apns"
+    
+    pub token_blob: Vec<u8>, // Encrypted token
+    pub registered_at: i64,
+    pub last_used: i64,
+    pub is_active: bool,
+}
+
+// -----------------------------------------------------------------------------
+// DRIFT DATABASE STRUCTURE
+// -----------------------------------------------------------------------------
 drift_db_table!(
     User, 
     Meeting, 
     MeetingParticipant, 
     ChainBlock, 
-    ChainTransaction, 
     LocalConfig, 
-    DictionaryEntry
+    DictionaryCache, 
+    PushToken
 );
 
-/// Main Database Access Object
 #[derive(Clone, Debug)]
 pub struct AppDatabase {
     pub users: UsersTable,
     pub meetings: MeetingsTable,
     pub participants: MeetingParticipantsTable,
     pub blocks: ChainBlocksTable,
-    pub transactions: ChainTransactionsTable,
     pub config: LocalConfigsTable,
-    pub dicts: DictionaryEntriesTable,
+    pub dictionary: DictionaryCachesTable,
+    pub push_tokens: PushTokensTable,
 }
