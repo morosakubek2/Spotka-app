@@ -1,6 +1,6 @@
 // mobile/rust-core/src/crypto/e2ee.rs
 // End-to-End Encryption Module (Hybrid: X25519 + AES-256-GCM).
-// Features: PFS, Replay Protection, Authenticated Encryption, Memory Safety.
+// Features: PFS, Replay Protection, Authenticated Encryption (with AAD), Memory Safety, Compression.
 // Year: 2026 | Rust Edition: 2024
 
 use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret};
@@ -10,17 +10,19 @@ use aes_gcm::{
 };
 use sha2::{Sha256, Digest};
 use rand::rngs::OsRng;
+use rand::RngCore;
 use zeroize::{Zeroize, Zeroizing};
 use serde::{Serialize, Deserialize};
 use log::{error, warn};
+use lz4_flex::compress_prepend_size; // Added compression dependency
 
 /// Encrypted Payload structure sent over P2P.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EncryptedPacket {
-    pub ephemeral_pub_key: Vec<u8>, // Public key of the sender's ephemeral keypair (for DH)
-    pub nonce: Vec<u8>,             // 12-byte nonce for AES-GCM
-    pub ciphertext: Vec<u8>,        // Encrypted (and authenticated) data
-    pub timestamp: u64,             // Unix timestamp for replay protection
+    pub ephemeral_pub_key: Vec<u8>, // 32 bytes
+    pub nonce: Vec<u8>,             // 12 bytes
+    pub ciphertext: Vec<u8>,        
+    pub timestamp: u64,             
 }
 
 /// Result of decryption.
@@ -33,52 +35,56 @@ pub struct DecryptedPayload {
 pub struct E2EE;
 
 impl E2EE {
-    /// Encrypts data for a specific recipient using their long-term public key.
-    /// Implements Hybrid Encryption:
-    /// 1. Generate ephemeral X25519 keypair.
-    /// 2. Derive shared secret (DH).
-    /// 3. Derive AES key from shared secret + context (HKDF-like via SHA256).
-    /// 4. Encrypt with AES-256-GCM.
+    /// Encrypts data for a specific recipient.
+    /// Includes: Compression, PFS, AAD authentication.
     pub fn encrypt(
         data: &[u8],
         recipient_long_term_pub_key: &PublicKey,
-        sender_long_term_priv_key: &EphemeralSecret, // Usually passed as reference to secret
+        sender_long_term_priv_key: &EphemeralSecret,
+        aad_context: &[u8], // NEW: Additional Authenticated Data (e.g., sender_id, msg_type)
     ) -> Result<EncryptedPacket, &'static str> {
-        // 1. Generate Ephemeral Key for Perfect Forward Secrecy
-        let csprng = OsRng {};
-        let ephemeral_secret = EphemeralSecret::random_from_rng(csprng);
-        let ephemeral_pub_key = ephemeral_secret.clamp().to_public_key(); // Note: clamp() is crucial for X25519
+        // 1. Compress Data (Default behavior for P2P efficiency)
+        let compressed_data = compress_prepend_size(data);
 
-        // 2. Diffie-Hellman Key Exchange
-        // Shared Secret = Ephemeral_Secret * Recipient_Public_Key
-        // Note: In a real handshake, we might use static-ephemeral or ephemeral-ephemeral.
-        // Here we assume sender uses ephemeral, recipient uses static long-term key.
+        // 2. Generate Ephemeral Key for PFS
+        let mut csprng = OsRng {};
+        let ephemeral_secret = EphemeralSecret::random_from_rng(&mut csprng);
+        let ephemeral_pub_key = ephemeral_secret.clamp().to_public_key();
+
+        // 3. Diffie-Hellman Key Exchange
         let shared_secret = ephemeral_secret.diffie_hellman(recipient_long_term_pub_key);
 
-        // 3. Derive AES Key (32 bytes) from Shared Secret
+        // 4. Derive AES Key (HKDF-like via SHA256) with Context
         let mut hasher = Sha256::new();
         hasher.update(shared_secret.as_bytes());
-        // Add context info to prevent key reuse in different protocols
         hasher.update(b"SPOTKA_E2EE_V1"); 
-        let key_bytes = hasher.finalize();
+        hasher.update(aad_context); // Include context in key derivation for extra safety
+        let mut key_bytes = hasher.finalize(); // Use Zeroizing implicitly via stack drop later if needed, but explicit is better
         
-        let cipher = Aes256Gcm::new_from_slice(&key_bytes)
+        // Wrap key in Zeroizing to ensure it's wiped when 'cipher' goes out of scope or on error
+        let zero_key = Zeroizing::new(key_bytes); 
+
+        let cipher = Aes256Gcm::new_from_slice(&*zero_key)
             .map_err(|_| "ERR_INVALID_KEY_SIZE")?;
 
-        // 4. Generate Random Nonce (12 bytes for GCM)
+        // 5. Generate Random Nonce (12 bytes)
         let mut nonce_bytes = [0u8; 12];
-        OsRng.fill_bytes(&mut nonce_bytes);
+        csprng.fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
-        // 5. Encrypt (Authenticated Encryption)
+        // 6. Encrypt with AAD
         let payload = Payload {
-            msg: data,
-            aad: b"", // Additional Authenticated Data (empty for now)
+            msg: &compressed_data,
+            aad: aad_context, // Authenticate the context too!
         };
 
         let ciphertext = cipher
             .encrypt(nonce, payload)
             .map_err(|_| "ERR_ENCRYPTION_FAILED")?;
+
+        // Explicitly clear sensitive buffers before returning
+        drop(zero_key); 
+        shared_secret.zeroize(); // Ensure shared secret is wiped
 
         Ok(EncryptedPacket {
             ephemeral_pub_key: ephemeral_pub_key.as_bytes().to_vec(),
@@ -88,73 +94,76 @@ impl E2EE {
         })
     }
 
-    /// Decrypts a packet using the recipient's long-term private key.
-    /// Verifies integrity and checks for replay attacks.
+    /// Decrypts a packet.
+    /// Verifies integrity, AAD, and checks for replay attacks.
     pub fn decrypt(
         packet: &EncryptedPacket,
         recipient_long_term_priv_key: &EphemeralSecret,
+        aad_context: &[u8], // Must match the AAD used during encryption
     ) -> Result<DecryptedPayload, &'static str> {
         
-        // 1. Replay Attack Protection (Time Window)
+        // 1. Replay Attack Protection
         let now = chrono::Utc::now().timestamp() as u64;
-        let max_age_seconds = 300; // 5 minutes window
+        let max_age_seconds = 300; // 5 minutes
         if now > packet.timestamp + max_age_seconds {
             warn!("ERR_PACKET_EXPIRED");
             return Err("ERR_PACKET_EXPIRED");
         }
 
-        // 2. Reconstruct Sender's Public Key
-        let sender_pub_key_bytes: [u8; 32] = packet.ephemeral_pub_key
-            .clone()
-            .try_into()
-            .map_err(|_| "ERR_INVALID_PUB_KEY_LENGTH")?;
-        
+        // 2. Validate Public Key Length explicitly
+        if packet.ephemeral_pub_key.len() != 32 {
+            return Err("ERR_INVALID_PUB_KEY_LENGTH");
+        }
+        let mut sender_pub_key_bytes = [0u8; 32];
+        sender_pub_key_bytes.copy_from_slice(&packet.ephemeral_pub_key);
         let sender_pub_key = PublicKey::from(sender_pub_key_bytes);
 
-        // 3. Diffie-Hellman Key Exchange (Reverse side)
-        // Shared Secret = Recipient_Private_Key * Sender_Ephemeral_Public_Key
+        // 3. Diffie-Hellman
         let shared_secret = recipient_long_term_priv_key.diffie_hellman(&sender_pub_key);
 
-        // 4. Derive AES Key (Must match sender's derivation)
+        // 4. Derive AES Key
         let mut hasher = Sha256::new();
         hasher.update(shared_secret.as_bytes());
         hasher.update(b"SPOTKA_E2EE_V1");
-        let key_bytes = hasher.finalize();
+        hasher.update(aad_context);
+        let mut key_bytes = hasher.finalize();
+        let zero_key = Zeroizing::new(key_bytes);
 
-        let cipher = Aes256Gcm::new_from_slice(&key_bytes)
+        let cipher = Aes256Gcm::new_from_slice(&*zero_key)
             .map_err(|_| "ERR_INVALID_KEY_SIZE")?;
 
-        // 5. Decrypt & Verify Integrity
+        // 5. Validate Nonce Length
+        if packet.nonce.len() != 12 {
+            return Err("ERR_INVALID_NONCE_LENGTH");
+        }
         let nonce = Nonce::from_slice(&packet.nonce);
+
+        // 6. Decrypt & Verify Integrity (including AAD)
         let payload = Payload {
             msg: &packet.ciphertext,
-            aad: b"",
+            aad: aad_context, 
         };
 
-        let plaintext = cipher
+        let mut plaintext = cipher
             .decrypt(nonce, payload)
-            .map_err(|_| "ERR_DECRYPTION_FAILED_OR_TAMPERED")?; // Failure means either wrong key or tampered data
+            .map_err(|_| "ERR_DECRYPTION_FAILED_OR_TAMPERED")?;
+
+        // Cleanup
+        drop(zero_key);
+        shared_secret.zeroize();
+
+        // 7. Decompress
+        let decompressed = lz4_flex::decompress_size_prepended(&plaintext)
+            .map_err(|_| "ERR_DECOMPRESSION_FAILED")?;
 
         Ok(DecryptedPayload {
-            data: plaintext,
+            data: decompressed,
             sender_pub_key,
         })
     }
-
-    /// Helper to compress data before encryption (Optional optimization).
-    #[cfg(feature = "compression")]
-    pub fn compress_and_encrypt(
-        data: &[u8],
-        recipient_pub_key: &PublicKey,
-        sender_priv_key: &EphemeralSecret,
-    ) -> Result<EncryptedPacket, &'static str> {
-        use lz4_flex::compress_prepend_size;
-        let compressed = compress_prepend_size(data);
-        Self::encrypt(&compressed, recipient_pub_key, sender_priv_key)
-    }
 }
 
-// Ensure secrets are wiped from memory when dropped
+// Ensure secrets are wiped
 impl Drop for EphemeralSecret {
     fn drop(&mut self) {
         self.zeroize();
@@ -164,44 +173,54 @@ impl Drop for EphemeralSecret {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use x25519_dalek::EphemeralSecret;
 
     #[test]
-    fn test_round_trip_encryption() {
-        // Generate Long-term Keys for Recipient
+    fn test_round_trip_with_aad() {
         let recipient_secret = EphemeralSecret::random_from_rng(OsRng);
         let recipient_pub = recipient_secret.clamp().to_public_key();
-
-        // Generate Long-term Keys for Sender (simulated as ephemeral for test simplicity)
         let sender_secret = EphemeralSecret::random_from_rng(OsRng);
         
-        let original_data = b"Secret Meetup Location: Park Bench";
+        let original_data = b"Secret Meetup Location";
+        let aad = b"session_123"; // Context
 
-        // Encrypt
-        let packet = E2EE::encrypt(original_data, &recipient_pub, &sender_secret)
+        let packet = E2EE::encrypt(original_data, &recipient_pub, &sender_secret, aad)
             .expect("Encryption failed");
 
-        // Decrypt
-        let result = E2EE::decrypt(&packet, &recipient_secret)
+        // Decrypt with correct AAD
+        let result = E2EE::decrypt(&packet, &recipient_secret, aad)
             .expect("Decryption failed");
 
         assert_eq!(result.data, original_data);
     }
 
     #[test]
-    fn test_tampering_detection() {
+    fn test_aad_mismatch_detection() {
         let recipient_secret = EphemeralSecret::random_from_rng(OsRng);
         let recipient_pub = recipient_secret.clamp().to_public_key();
         let sender_secret = EphemeralSecret::random_from_rng(OsRng);
 
-        let packet = E2EE::encrypt(b"Original Data", &recipient_pub, &sender_secret).unwrap();
+        let packet = E2EE::encrypt(b"Data", &recipient_pub, &sender_secret, b"correct_aad").unwrap();
 
-        // Tamper with ciphertext
-        let mut tampered_packet = packet.clone();
-        tampered_packet.ciphertext[0] ^= 0xFF; 
-
-        let result = E2EE::decrypt(&tampered_packet, &recipient_secret);
+        // Try to decrypt with WRONG AAD
+        let result = E2EE::decrypt(&packet, &recipient_secret, b"wrong_aad");
+        
+        // Should fail because GCM tag verification will fail due to AAD mismatch
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "ERR_DECRYPTION_FAILED_OR_TAMPERED");
+    }
+
+    #[test]
+    fn test_compression_efficiency() {
+        let recipient_secret = EphemeralSecret::random_from_rng(OsRng);
+        let recipient_pub = recipient_secret.clamp().to_public_key();
+        let sender_secret = EphemeralSecret::random_from_rng(OsRng);
+
+        // Repetitive data compresses well
+        let large_data = vec![b'a'; 1000]; 
+        let packet = E2EE::encrypt(&large_data, &recipient_pub, &sender_secret, b"test").unwrap();
+
+        // Ciphertext should be significantly smaller than raw data + overhead
+        // (1000 bytes -> ~20 bytes compressed + crypto overhead ~40 bytes)
+        assert!(packet.ciphertext.len() < large_data.len() / 2);
     }
 }

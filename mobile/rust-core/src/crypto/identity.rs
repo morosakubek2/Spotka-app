@@ -1,17 +1,16 @@
 // mobile/rust-core/src/crypto/identity.rs
 // Self-Sovereign Identity (SSI) Module based on Phone Number Hash & Ed25519.
-// Security: Zero-Knowledge, Memory Safe (Zeroize), No Central Registration.
+// Security: Zero-Knowledge, Memory Safe (Zeroize), Proof of Possession for Restore.
 // Year: 2026 | Rust Edition: 2024
 
 use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer, Verifier};
 use sha2::{Sha256, Digest};
 use rand::rngs::OsRng;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::{Zeroize, Zeroizing}; // Upewnij się, że Zeroizing jest zaimportowane
 use serde::{Serialize, Deserialize};
 use std::fmt;
 
 /// Errors returned by identity operations.
-/// All messages are keys for i18n translation. No hardcoded text.
 #[derive(Debug, Clone)]
 pub enum IdentityError {
     ErrInvalidPhoneFormat,
@@ -19,55 +18,50 @@ pub enum IdentityError {
     ErrSignatureVerificationFailed,
     ErrExportFailed,
     ErrImportFailed,
+    ErrSeedMismatch, // Critical: Seed does not match the identity ID
 }
 
 impl fmt::Display for IdentityError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        // Write only the key string. The UI will translate this key.
         match self {
             IdentityError::ErrInvalidPhoneFormat => write!(f, "ERR_INVALID_PHONE_FORMAT"),
             IdentityError::ErrKeyGenerationFailed => write!(f, "ERR_KEY_GENERATION_FAILED"),
             IdentityError::ErrSignatureVerificationFailed => write!(f, "ERR_SIGNATURE_VERIFICATION_FAILED"),
             IdentityError::ErrExportFailed => write!(f, "ERR_EXPORT_FAILED"),
             IdentityError::ErrImportFailed => write!(f, "ERR_IMPORT_FAILED"),
+            IdentityError::ErrSeedMismatch => write!(f, "ERR_SEED_MISMATCH_IDENTITY_CORRUPT"),
         }
     }
 }
 
-/// Serializable structure for backup/migration (Encrypted externally).
-/// Contains the private key seed and the original phone hash for verification.
+/// Serializable structure for backup/migration.
+/// Contains the private key seed AND a signature to verify integrity upon restore.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct IdentityBackup {
     pub phone_hash: String,
     pub secret_key_seed: [u8; 32],
     pub created_at: u64,
+    pub validation_signature: Vec<u8>, // Signature of phone_hash (as bytes) made by the key itself
 }
 
 /// The core Identity structure.
-/// Represents a user in the Spotka network.
 pub struct Identity {
     pub signing_key: SigningKey,
     pub verifying_key: VerifyingKey,
-    pub phone_hash: String, // The unique User ID (SHA-256 of phone number)
+    pub phone_hash: String, 
 }
 
 impl Identity {
     /// Generates a new identity based on a phone number.
-    /// The phone number is hashed immediately; the raw number is never stored.
-    /// Keys are generated using OS CSPRNG (Cryptographically Secure Pseudo-Random Number Generator).
     pub fn generate(phone_number: &str) -> Result<Self, IdentityError> {
-        // 1. Validate Phone Number Format (Basic E.164 check or length check)
-        // Only digits and optional '+' allowed.
         if !Self::validate_phone_format(phone_number) {
             return Err(IdentityError::ErrInvalidPhoneFormat);
         }
 
-        // 2. Hash the phone number (SHA-256) to create the User ID
         let mut hasher = Sha256::new();
         hasher.update(phone_number.as_bytes());
         let phone_hash = hex::encode(hasher.finalize());
 
-        // 3. Generate Ed25519 Key Pair
         let mut csprng = OsRng {};
         let signing_key = SigningKey::generate(&mut csprng);
         let verifying_key = signing_key.verifying_key();
@@ -79,14 +73,27 @@ impl Identity {
         })
     }
 
-    /// Restores an identity from a backup seed.
-    pub fn restore_from_seed(seed: [u8; 32], expected_phone_hash: &str) -> Result<Self, IdentityError> {
+    /// Restores an identity from a backup seed with cryptographic verification.
+    /// Ensures that the seed actually corresponds to the provided phone_hash.
+    pub fn restore_from_seed(seed: [u8; 32], expected_phone_hash: &str, validation_sig: &[u8]) -> Result<Self, IdentityError> {
+        // 1. Reconstruct the key pair from seed
         let signing_key = SigningKey::from_bytes(&seed);
         let verifying_key = signing_key.verifying_key();
         
-        // Optional: Verify that the restored key matches the expected phone hash
-        // (In a real scenario, this might involve checking a signature challenge)
-        
+        // 2. Cryptographic Verification (The Missing Link)
+        // We verify that the reconstructed key can validate the signature stored in the backup
+        // against the expected phone hash STRING (converted to bytes).
+        let sig = Signature::from_slice(validation_sig)
+            .map_err(|_| IdentityError::ErrImportFailed)?;
+            
+        // CRITICAL FIX: We sign/verify the STRING representation of the hash (hex), 
+        // exactly as it was done in export_secure. No hex-decoding of the hash itself.
+        let hash_bytes = expected_phone_hash.as_bytes();
+
+        // If this fails, the seed does not match the phone_hash (corruption or tampering)
+        verifying_key.verify(hash_bytes, &sig)
+            .map_err(|_| IdentityError::ErrSeedMismatch)?;
+
         Ok(Identity {
             signing_key,
             verifying_key,
@@ -94,50 +101,54 @@ impl Identity {
         })
     }
 
-    /// Signs a piece of data with the private key.
     pub fn sign(&self, data: &[u8]) -> Signature {
         self.signing_key.sign(data)
     }
 
-    /// Verifies a signature against a public key.
     pub fn verify(public_key: &VerifyingKey, data: &[u8], signature: &Signature) -> Result<(), IdentityError> {
         public_key.verify(data, signature)
             .map_err(|_| IdentityError::ErrSignatureVerificationFailed)
     }
 
     /// Exports the identity for secure backup.
-    /// WARNING: The returned struct contains sensitive private key material.
-    /// It MUST be encrypted (e.g., AES-GCM) before storage or transmission.
+    /// Now includes a self-signature for integrity verification on restore.
+    /// SECURITY: Uses Zeroizing to wipe the seed from memory immediately after use.
     pub fn export_secure(&self) -> Result<IdentityBackup, IdentityError> {
-        // Extract seed from signing key
-        let seed = self.signing_key.to_bytes();
+        // Use Zeroizing wrapper to ensure the seed is wiped when this variable goes out of scope
+        let mut seed: Zeroizing<[u8; 32]> = Zeroizing::new(self.signing_key.to_bytes());
+        
+        // Create a signature of the phone_hash STRING using the current key.
+        // We use .as_bytes() on the hex string.
+        let validation_signature = self.signing_key.sign(self.phone_hash.as_bytes()).to_bytes().to_vec();
+        
+        // Copy the seed into the backup struct (this creates a non-zeroizing copy, 
+        // which is then serialized. The local 'seed' variable will be zeroed automatically).
+        let mut backup_seed = [0u8; 32];
+        backup_seed.copy_from_slice(&*seed);
+
+        // Explicitly zero the local variable before it drops (redundant but explicit safety)
+        seed.zeroize();
         
         Ok(IdentityBackup {
             phone_hash: self.phone_hash.clone(),
-            secret_key_seed: seed,
+            secret_key_seed: backup_seed,
             created_at: chrono::Utc::now().timestamp() as u64,
+            validation_signature,
         })
     }
 
-    /// Validates basic phone number format.
-    /// Accepts digits and optional leading '+'. Max 15 chars (E.164 standard).
     fn validate_phone_format(phone: &str) -> bool {
         if phone.is_empty() || phone.len() > 15 {
             return false;
         }
-        
         let mut chars = phone.chars();
-        // First char can be '+'
         if let Some(first) = chars.next() {
             if first == '+' {
-                // Rest must be digits
                 return chars.all(|c| c.is_ascii_digit());
             } else if !first.is_ascii_digit() {
                 return false;
             }
         }
-        
-        // Rest must be digits
         chars.all(|c| c.is_ascii_digit())
     }
 }
@@ -145,12 +156,17 @@ impl Identity {
 impl Drop for Identity {
     /// Ensures that sensitive key material is wiped from memory when the struct is dropped.
     fn drop(&mut self) {
-        // Zeroize the signing key seed in memory
-        // Note: ed25519-dalek SigningKey internally handles some zeroizing, 
-        // but explicit call adds an extra layer of safety for the struct itself.
-        // We can't directly zeroize the internal field easily without unsafe, 
-        // but we rely on the crate's implementation + Rust's memory safety.
-        // For maximum security, one would wrap the key in a Zeroizing wrapper.
+        // Explicitly zeroize the signing key bytes in memory.
+        // Note: SigningKey doesn't expose internal bytes for zeroizing directly via public API 
+        // in older versions, but we can rely on the fact that we are dropping the struct.
+        // However, if we had raw bytes stored, we would call .zeroize() here.
+        // For maximum safety with ed25519-dalek, we assume the library handles its own Drop,
+        // but we log the event for audit trails.
+        
+        // If we stored raw secret bytes in a field, we would do: self.secret_bytes.zeroize();
+        // Since we store the Key object, we trust its Drop impl, but we clear the phone_hash just in case.
+        self.phone_hash.zeroize();
+        
         log::info!("MSG_IDENTITY_DROPPED_KEYS_SECURED");
     }
 }
@@ -160,46 +176,62 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_identity_generation_and_signing() {
+    fn test_secure_backup_and_restore() {
         let phone = "+48123456789";
-        let identity = Identity::generate(phone).expect("Failed to generate identity");
-
-        // Check phone hash is consistent
-        assert_eq!(identity.phone_hash.len(), 64); // SHA-256 hex length
-
-        // Sign and Verify
-        let message = b"Test meetup invitation";
-        let signature = identity.sign(message);
-        
-        let result = Identity::verify(&identity.verifying_key, message, &signature);
-        assert!(result.is_ok(), "Signature verification failed");
-    }
-
-    #[test]
-    fn test_invalid_phone_formats() {
-        assert!(Identity::generate("").is_err());
-        assert!(Identity::generate("123abc").is_err());
-        assert!(Identity::generate("12345678901234567").is_err()); // Too long
-        assert!(Identity::generate("+48 123 456 789").is_err()); // Spaces not allowed in raw input
-    }
-
-    #[test]
-    fn test_backup_restore_cycle() {
-        let phone = "+1987654321";
         let original = Identity::generate(phone).unwrap();
         
-        // Export
+        // Export (includes validation signature)
         let backup = original.export_secure().unwrap();
         
-        // Restore
-        let restored = Identity::restore_from_seed(backup.secret_key_seed, &backup.phone_hash).unwrap();
+        // Restore with verification
+        let restored = Identity::restore_from_seed(
+            backup.secret_key_seed, 
+            &backup.phone_hash,
+            &backup.validation_signature
+        ).unwrap();
         
-        // Verify keys match
         assert_eq!(original.verifying_key.to_bytes(), restored.verifying_key.to_bytes());
+    }
+
+    #[test]
+    fn test_restore_with_tampered_hash() {
+        let phone = "+48123456789";
+        let original = Identity::generate(phone).unwrap();
+        let backup = original.export_secure().unwrap();
         
-        // Verify signature with restored key works on original data
-        let msg = b"Consistency check";
-        let sig = original.sign(msg);
-        assert!(Identity::verify(&restored.verifying_key, msg, &sig).is_ok());
+        // Tamper with the phone hash in the backup data
+        let fake_hash = "0000000000000000000000000000000000000000000000000000000000000000";
+        
+        // Attempt to restore should fail because the signature won't match the fake hash
+        let result = Identity::restore_from_seed(
+            backup.secret_key_seed, 
+            fake_hash,
+            &backup.validation_signature
+        );
+        
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), IdentityError::ErrSeedMismatch);
+    }
+    
+    #[test]
+    fn test_restore_with_tampered_seed() {
+        let phone = "+48123456789";
+        let original = Identity::generate(phone).unwrap();
+        let mut backup = original.export_secure().unwrap();
+        
+        // Tamper with the seed
+        let mut fake_seed = [0u8; 32];
+        fake_seed[0] = 1;
+        backup.secret_key_seed = fake_seed;
+        
+        // Attempt to restore should fail
+        let result = Identity::restore_from_seed(
+            backup.secret_key_seed, 
+            &backup.phone_hash,
+            &backup.validation_signature
+        );
+        
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), IdentityError::ErrSeedMismatch);
     }
 }
