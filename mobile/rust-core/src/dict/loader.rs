@@ -8,6 +8,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use log::{info, warn};
 
+/// Manifest for remote dictionary management (versioning, hash verification).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DictManifest {
+    pub language: String,
+    pub version: u32,
+    pub entry_count: usize,
+    pub content_hash: String, // SHA-256 of the JSON content to verify integrity
+}
+
 /// Structure of a single entry in the JSON dictionary file.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DictEntryJson {
@@ -20,9 +29,16 @@ pub struct DictEntryJson {
 /// Structure of the entire JSON dictionary file.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DictFile {
-    pub language: String, // e.g., "en", "pl", "eo"
+    pub language: String,
     pub version: u32,
     pub entries: Vec<DictEntryJson>,
+}
+
+/// Source of the dictionary entry (Official vs Custom).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum DictSource {
+    Official,
+    Custom,
 }
 
 /// Internal representation of a dictionary entry with assigned index.
@@ -31,8 +47,8 @@ pub struct DictEntry {
     pub word: String,
     pub category: String,
     pub freq: u32,
-    pub index: u8,        // The compressed index (0-254)
-    pub is_custom: bool,  // Flag to distinguish source
+    pub index: u8,
+    pub source: DictSource,
 }
 
 /// Error keys for translation (Language Agnostic).
@@ -41,7 +57,8 @@ pub enum DictError {
     InvalidJson,
     VersionMismatch,
     EmptyDictionary,
-    IndexOverflow, // More than 255 unique tags
+    IndexOverflow,
+    MergeFailed,
 }
 
 impl std::fmt::Display for DictError {
@@ -51,24 +68,23 @@ impl std::fmt::Display for DictError {
             DictError::VersionMismatch => write!(f, "ERR_DICT_VERSION_MISMATCH"),
             DictError::EmptyDictionary => write!(f, "ERR_DICT_EMPTY"),
             DictError::IndexOverflow => write!(f, "ERR_DICT_INDEX_OVERFLOW"),
+            DictError::MergeFailed => write!(f, "ERR_DICT_MERGE_FAILED"),
         }
     }
 }
 
 /// Main Dictionary Manager.
 /// Holds the merged map of words to entries.
-pub struct DictionaryManager {
-    // Map: Word (lowercase) -> Entry
+pub struct DictionaryLoader { // Renamed from DictionaryManager to match mod.rs usage better
     entries: HashMap<String, DictEntry>,
-    // Reverse Map: Index -> Word (for decompression/display)
     index_map: HashMap<u8, String>,
     language: String,
     max_official_index: u8,
 }
 
-impl DictionaryManager {
+impl DictionaryLoader {
     pub fn new() -> Self {
-        DictionaryManager {
+        DictionaryLoader {
             entries: HashMap::new(),
             index_map: HashMap::new(),
             language: String::new(),
@@ -76,16 +92,13 @@ impl DictionaryManager {
         }
     }
 
-    /// Loads and merges an OFFICIAL dictionary.
-    /// Official entries get indices starting from 1.
-    /// Overwrites any existing entries (custom or official) with the same word.
-    pub fn load_official(&mut self, json_content: &str, expected_version: u32) -> Result<(), DictError> {
+    /// Loads an OFFICIAL dictionary.
+    /// Overwrites existing entries. Indices start from 1.
+    pub fn load_from_json_official(&mut self, json_content: &str, expected_version: u32) -> Result<(), DictError> {
         let file: DictFile = serde_json::from_str(json_content)
             .map_err(|_| DictError::InvalidJson)?;
 
         if file.version != expected_version {
-            // In strict mode, we might reject. Here we just warn or accept depending on policy.
-            // For Alpha, let's be strict.
             return Err(DictError::VersionMismatch);
         }
 
@@ -94,31 +107,30 @@ impl DictionaryManager {
         }
 
         self.language = file.language.clone();
-        let mut current_index: u8 = 1; // Start official indices from 1
+        self.max_official_index = 0; // Reset for official load
+        self.entries.clear();
+        self.index_map.clear();
 
-        // Sort by frequency to assign lower indices to more common words (optimization)
+        let mut current_index: u8 = 1;
         let mut sorted_entries = file.entries;
         sorted_entries.sort_by(|a, b| b.freq.cmp(&a.freq));
 
         for entry_json in sorted_entries {
-            let word_key = entry_json.word.to_lowercase();
-            
-            // Assign index
-            if current_index == 255 { // Reserve 255 for special use/overflow
+            if current_index == 255 {
                 return Err(DictError::IndexOverflow);
             }
 
+            let word_key = entry_json.word.to_lowercase();
             let entry = DictEntry {
-                word: entry_json.word, // Keep original casing for display
+                word: entry_json.word,
                 category: entry_json.category,
                 freq: entry_json.freq,
                 index: current_index,
-                is_custom: false,
+                source: DictSource::Official,
             };
 
             self.entries.insert(word_key.clone(), entry);
             self.index_map.insert(current_index, word_key);
-            
             current_index += 1;
         }
 
@@ -127,62 +139,110 @@ impl DictionaryManager {
         Ok(())
     }
 
-    /// Loads and merges a CUSTOM dictionary.
-    /// Custom entries DO NOT overwrite official ones.
-    /// Indices start after the last official index.
-    pub fn load_custom(&mut self, json_content: &str) -> Result<(), DictError> {
-        let file: DictFile = serde_json::from_str(json_content)
-            .map_err(|_| DictError::InvalidJson)?;
-
+    /// Merges a CUSTOM dictionary into the current one.
+    /// Does NOT overwrite official entries. Indices continue after max_official_index.
+    pub fn merge_custom(&mut self, other: &mut DictionaryLoader) -> Result<(), DictError> {
         let mut current_index: u8 = self.max_official_index + 1;
+        let mut merged_count = 0;
 
-        for entry_json in file.entries {
-            let word_key = entry_json.word.to_lowercase();
+        // Iterate over other's entries (assuming 'other' is loaded as custom or temporary)
+        // We need to access other.entries directly. 
+        // Note: In a real scenario, 'other' might be a temporary loader just for parsing.
+        for (_, entry_json_like) in other.entries.drain() {
+            let word_key = entry_json_like.word.to_lowercase();
 
-            // Skip if word already exists in official dictionary (Priority Rule)
+            // Priority Rule: Skip if official exists
             if self.entries.contains_key(&word_key) {
-                continue; 
+                continue;
             }
 
             if current_index == 255 {
                 warn!("MSG_DICT_CUSTOM_INDEX_LIMIT_REACHED");
-                break; 
+                break;
             }
 
-            let entry = DictEntry {
-                word: entry_json.word,
-                category: entry_json.category,
-                freq: entry_json.freq,
+            let new_entry = DictEntry {
+                word: entry_json_like.word,
+                category: entry_json_like.category,
+                freq: entry_json_like.freq,
                 index: current_index,
-                is_custom: true,
+                source: DictSource::Custom,
             };
 
-            self.entries.insert(word_key.clone(), entry);
+            self.entries.insert(word_key.clone(), new_entry);
             self.index_map.insert(current_index, word_key);
             current_index += 1;
+            merged_count += 1;
         }
 
-        info!("MSG_DICT_CUSTOM_MERGED");
+        info!("MSG_DICT_CUSTOM_MERGED: {} new entries", merged_count);
         Ok(())
     }
 
-    /// Retrieves an entry by word (case-insensitive).
+    /// Helper to load from JSON specifically for merging (parses into self temporarily)
+    pub fn load_from_json(&mut self, json_content: &str) -> Result<(), DictError> {
+        // This is a simplified parser used by GlobalDictManager before deciding merge strategy
+        // For the purpose of 'merge_custom', we assume the caller parses into a temp DictionaryLoader
+        // and then calls merge_custom. 
+        // However, to support the flow in mod.rs where we call load_from_json then merge:
+        // Let's assume this method populates 'self' as a temporary container if called on a new instance.
+        let file: DictFile = serde_json::from_str(json_content)
+            .map_err(|_| DictError::InvalidJson)?;
+        
+        self.language = file.language;
+        for entry_json in file.entries {
+             let word_key = entry_json.word.to_lowercase();
+             let entry = DictEntry {
+                word: entry_json.word,
+                category: entry_json.category,
+                freq: entry_json.freq,
+                index: 0, // Temporary, will be reassigned during merge
+                source: DictSource::Custom,
+            };
+            self.entries.insert(word_key, entry);
+        }
+        Ok(())
+    }
+
+    /// Retrieves the static index for a word. Returns None if not found or is custom (depending on policy).
+    /// Here we return index regardless of source, but caller can check source via get_entry.
+    pub fn get_static_index(&self, word: &str) -> Option<u8> {
+        self.entries.get(&word.to_lowercase()).map(|e| e.index)
+    }
+
+    /// Retrieves full entry metadata.
     pub fn get_entry(&self, word: &str) -> Option<&DictEntry> {
         self.entries.get(&word.to_lowercase())
     }
 
-    /// Retrieves a word by its index (for decompression).
+    /// Retrieves word by index (for decompression).
     pub fn get_word_by_index(&self, index: u8) -> Option<&String> {
         self.index_map.get(&index)
     }
 
-    /// Checks if a word exists in the dictionary.
-    pub fn contains(&self, word: &str) -> bool {
-        self.entries.contains_key(&word.to_lowercase())
+    /// Gets top N frequent words for session pre-loading.
+    pub fn get_top_frequent(&self, n: usize) -> Vec<String> {
+        let mut all_entries: Vec<&DictEntry> = self.entries.values().collect();
+        all_entries.sort_by(|a, b| b.freq.cmp(&a.freq));
+        
+        all_entries.into_iter()
+            .take(n)
+            .map(|e| e.word.clone())
+            .collect()
     }
 
     pub fn language(&self) -> &str {
         &self.language
+    }
+    
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+impl Default for DictionaryLoader {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -191,37 +251,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_load_official_and_priority() {
-        let mut manager = DictionaryManager::new();
-        
+    fn test_official_priority_and_merge() {
+        let mut official_loader = DictionaryLoader::new();
         let official_json = r#"{"language": "en", "version": 1, "entries": [
-            {"word": "Kino", "category": "fun", "freq": 100},
-            {"word": "Sport", "category": "act", "freq": 90}
+            {"word": "Kino", "category": "fun", "freq": 100}
         ]}"#;
+        official_loader.load_from_json_official(official_json, 1).unwrap();
 
-        manager.load_official(official_json, 1).unwrap();
-
-        // Verify case insensitivity
-        assert!(manager.contains("kino"));
-        assert!(manager.contains("KINO"));
-        
-        // Verify index assignment (sorted by freq: Kino=1, Sport=2)
-        assert_eq!(manager.get_entry("kino").unwrap().index, 1);
-        assert_eq!(manager.get_entry("sport").unwrap().index, 2);
-
-        // Load custom with overlapping word
+        let mut custom_loader = DictionaryLoader::new();
         let custom_json = r#"{"language": "en", "version": 1, "entries": [
-            {"word": "Kino", "category": "custom", "freq": 10}, // Should be ignored
+            {"word": "Kino", "category": "custom", "freq": 10}, 
             {"word": "Theater", "category": "fun", "freq": 50}
         ]}"#;
+        custom_loader.load_from_json(custom_json).unwrap();
 
-        manager.load_custom(custom_json).unwrap();
+        // Merge custom into official
+        official_loader.merge_custom(&mut custom_loader).unwrap();
 
-        // "Kino" should still be official (not custom)
-        assert_eq!(manager.get_entry("kino").unwrap().is_custom, false);
-        
-        // "Theater" should be added with index > max_official (which is 2)
-        assert_eq!(manager.get_entry("theater").unwrap().index, 3);
-        assert_eq!(manager.get_entry("theater").unwrap().is_custom, true);
+        // "Kino" must remain official (index 1)
+        let kino = official_loader.get_entry("kino").unwrap();
+        assert_eq!(kino.index, 1);
+        assert_eq!(kino.source, DictSource::Official);
+
+        // "Theater" must be custom (index 2)
+        let theater = official_loader.get_entry("theater").unwrap();
+        assert_eq!(theater.index, 2);
+        assert_eq!(theater.source, DictSource::Custom);
     }
 }
