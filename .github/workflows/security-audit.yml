@@ -1,63 +1,81 @@
-name: Security Audit
+name: Security Audit & Lint
 
 on:
   push:
     paths:
-      - '**/Cargo.toml'
-      - '**/Cargo.lock'
+      - 'mobile/rust-core/Cargo.toml'
+      - 'mobile/rust-core/Cargo.lock'
+      - 'mobile/rust-core/src/**'
   pull_request:
     paths:
-      - '**/Cargo.toml'
-      - '**/Cargo.lock'
+      - 'mobile/rust-core/Cargo.toml'
+      - 'mobile/rust-core/Cargo.lock'
+      - 'mobile/rust-core/src/**'
   schedule:
-    # Run every Monday at 00:00 UTC
+    # Run automatically once a week (e.g., every Monday at 00:00 UTC)
     - cron: '0 0 * * 1'
-  workflow_dispatch:
+  workflow_dispatch: # Allow manual trigger
 
 jobs:
   audit:
+    name: Security Audit & Lint
     runs-on: ubuntu-latest
+    
     steps:
-      - name: Checkout code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-action@stable
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
+          components: rustfmt, clippy
 
-      - name: Cache cargo registry and bins
-        uses: actions/cache@v3
+      - name: Cache Cargo Registry & Audit DB
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            ~/.cargo/bin
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/advisory-db
+            mobile/rust-core/target
+          key: ${{ runner.os }}-cargo-audit-${{ hashFiles('mobile/rust-core/Cargo.lock') }}
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
+      - name: Install cargo-audit (Specific Version)
+        run: cargo install cargo-audit --version 0.20.0
 
-      - name: Run Security Audit
-        id: audit
+      - name: Run Cargo Audit (Security Check)
+        working-directory: mobile/rust-core
         run: |
-          cd mobile/rust-core
-          # Generate JSON report for further processing
-          cargo audit --json > audit_report.json || true
-          
-          # Check if vulnerabilities were found
-          if [ -s audit_report.json ]; then
-            echo "Vulnerabilities found!"
-            cat audit_report.json
-            exit 1
-          else
-            echo "No vulnerabilities found."
-          fi
+          cargo audit --json > audit-results.json || true
+          # Fail if vulnerabilities found (check exit code of a separate run or parse JSON)
+          cargo audit 
+        # The second command ensures the job fails if vulnerabilities are found.
+        # The first command saves results for artifact upload even if it fails.
 
-      - name: Upload Audit Report
-        if: always()
+      - name: Upload Audit Results
         uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: security-audit-report
-          path: mobile/rust-core/audit_report.json
-          retention-days: 30
+          name: security-audit-results
+          path: mobile/rust-core/audit-results.json
+
+      - name: Check Code Formatting
+        working-directory: mobile/rust-core
+        run: cargo fmt -- --check
+
+      - name: Run Clippy (Linter)
+        working-directory: mobile/rust-core
+        # Treat warnings as errors to ensure high code quality
+        run: cargo clippy -- -D warnings
+
+      - name: Install cargo-udeps (Check for unused dependencies)
+        run: cargo install cargo-udeps
+      
+      - name: Run Unused Dependencies Check
+        working-directory: mobile/rust-core
+        run: cargo udeps --all-targets
+        # This helps minimize attack surface by removing unused crates
+
+      - name: Run Tests
+        working-directory: mobile/rust-core
+        run: cargo test
