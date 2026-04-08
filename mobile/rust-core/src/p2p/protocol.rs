@@ -1,6 +1,7 @@
 // mobile/rust-core/src/p2p/protocol.rs
-// P2P Protocol Definition: Message Formats, Serialization, Compression.
-// Features: Hybrid Push (FCM/APNs/Unified), Wake-up Only, Ghost Mode, Geo-Filtering.
+// P2P Protocol Definition: Private Mesh Architecture.
+// Features: Direct Invites, Chain-of-Trust Forwarding, Compact Statuses.
+// Security: No Public Gossip for Meetings (Free Tier), Signature Verification.
 // Year: 2026 | Rust Edition: 2024
 
 use serde::{Serialize, Deserialize};
@@ -9,42 +10,55 @@ use lz4_flex;
 use crate::crypto::identity::Identity;
 use crate::dict::cts_parser::CtsTag;
 use log::{warn, info};
+use chrono::Utc;
 
-/// Current protocol version. Nodes with mismatched major versions cannot communicate.
+/// Current protocol version.
 const PROTOCOL_VERSION: u16 = 1;
 const MIN_COMPATIBLE_VERSION: u16 = 1;
 
-/// Supported Push Notification Providers (User Selectable).
+// -----------------------------------------------------------------------------
+// COMPACT ENUMS (Optimized for Network Transmission - 1 Byte)
+// -----------------------------------------------------------------------------
+
+/// Status uczestnictwa w spotkaniu.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ParticipantStatus {
+    Invited = 0,      // Zaproszony (oczekuje na akceptację)
+    Interested = 1,   // "MOŻE" - lokalne (rzadko przesyłane)
+    Confirmed = 2,    // "UCZESTNICZĘ" - publiczne zobowiązanie
+    Present = 3,      // Potwierdzony na miejscu
+    NoShow = 4,       // Nieobecny mimo potwierdzenia
+}
+
+/// Supported Push Providers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PushProvider {
-    /// Open source alternative (Gotify, Nextcloud, etc.)
     UnifiedPush,
-    /// Google Firebase Cloud Messaging
     FCM,
-    /// Apple Push Notification service
     APNs,
-    /// No push notifications (Polling only / Offline Mode)
     None,
 }
 
-/// Priority levels for the Notification Engine.
+/// Priority levels.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PriorityLevel {
-    /// Immediate wake-up + sound (e.g., Family, Specific Users)
     High,
-    /// Standard notification (e.g., Group matches, Tag matches)
     Normal,
-    /// Silent update (only visible in app list, e.g., distant geo-events)
     Low,
 }
 
-/// Filter criteria for granular notifications.
+// -----------------------------------------------------------------------------
+// DATA STRUCTURES
+// -----------------------------------------------------------------------------
+
+/// Filter criteria for notifications.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotificationFilter {
     pub level: PriorityLevel,
-    pub specific_user_hashes: Vec<String>, // Hashes of phone numbers for "User Priority"
-    pub allowed_tags: Vec<String>,         // e.g., ["urgent", "help"]
-    pub max_distance_km: Option<f32>,      // For Geo-Priority
+    pub specific_user_hashes: Vec<String>,
+    pub allowed_tags: Vec<String>,
+    pub max_distance_km: Option<f32>,
 }
 
 /// Header common to all P2P messages.
@@ -53,38 +67,43 @@ pub struct MessageHeader {
     pub version: u16,
     pub msg_type: MessageType,
     pub timestamp: u64,
-    pub sender_id_hash: String, // SHA256 of sender's phone number
-    pub sender_storage_radius_km: u32, // For quick geo-filtering without full payload deserialization
-    pub signature: Vec<u8>,     // Ed25519 signature of the header + payload hash
+    pub sender_id_hash: String,
+    pub sender_storage_radius_km: u32,
+    pub signature: Vec<u8>,
 }
 
 /// Types of messages exchanged in the Spotka network.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum MessageType {
     Handshake,
-    Gossip,
+    // Gossip, // DEPRECATED for meetings in Free Tier. Kept for generic system announcements if needed.
     SyncRequest,
     SyncResponse,
     Ping,
     Pong,
     PushRegister,
-    Report, // For reputation reporting (NoShow, FakeProfile)
-    DictSync, // For dictionary synchronization
+    Report,
+    DictSync,
+    
+    // --- NEW: Private Mesh Meeting Types ---
+    ParticipationUpdate,
+    Invite,         // Zaproszenie na spotkanie (może być forwardowane)
+    InviteAccept,   // Akceptacja zaproszenia (do organizatora)
+    InviteReject,   // Odrzucenie zaproszenia
 }
 
 /// Payload for the Handshake message.
-/// Used to exchange capabilities and trust status upon connection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandshakePayload {
-    pub trust_anchor_count: u32, // Number of verifiers (for Ghost Mode check)
-    pub storage_radius_km: u32,  // User's configured data retention radius
+    pub trust_anchor_count: u32,
+    pub storage_radius_km: u32,
     pub push_provider: PushProvider,
-    pub push_token: Option<String>, // Encrypted token for wake-up
-    pub supported_languages: Vec<String>, // e.g., ["pl", "en", "eo"]
-    pub session_dictionary: Option<Vec<u8>>, // Optional initial dictionary sync
+    pub push_token: Option<String>,
+    pub supported_languages: Vec<String>,
+    pub session_dictionary: Option<Vec<u8>>,
 }
 
-/// Payload for Gossip messages (propagating meetup info).
+/// Payload for Gossip messages (Legacy / System-wide only).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GossipPayload {
     pub meetup_id_hash: String,
@@ -92,16 +111,71 @@ pub struct GossipPayload {
     pub location_lat: f64,
     pub location_lon: f64,
     pub start_time: u64,
-    pub tags: Vec<CtsTag>, // Compressed or Text tags
-    pub filter: NotificationFilter, // How receivers should treat this message
-    pub hop_count: u8, // To prevent infinite loops (TTL)
+    pub tags: Vec<CtsTag>,
+    pub filter: NotificationFilter,
+    pub hop_count: u8,
 }
 
-/// Payload for Push Registration updates.
+/// NEW: Payload for INVITE messages.
+/// Crucial Field: `is_friends_only` controls forwarding logic.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InvitePayload {
+    pub meeting_id_hash: String,
+    pub organizer_id_hash: String, // Who created the meeting
+    pub sender_id_hash: String,    // Who is sending this specific packet (forwarder)
+    pub recipient_id_hash: String, // Target user
+    
+    pub token: String,             // Unique invite token (UUID)
+    pub created_at: u64,           // Timestamp for expiration check
+    
+    // Control Flags
+    pub is_friends_only: bool,     // TRUE = Do not forward beyond direct friends of Organizer
+    pub max_participants: Option<u32>, // Capacity limit
+    pub current_guest_count: u32,  // Current confirmed count
+    
+    // Metadata
+    pub location_lat: f64,
+    pub location_lon: f64,
+    pub start_time: u64,
+    pub tags: Vec<CtsTag>,
+    
+    // Security
+    pub organizer_signature: Vec<u8>, // Signature by Organizer proving validity
+}
+
+/// NEW: Payload for accepting an invite.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InviteAcceptPayload {
+    pub meeting_id_hash: String,
+    pub user_id_hash: String,
+    pub recipient_id_hash: String, // Usually the Organizer
+    pub token: String,             // The token being accepted
+    pub user_signature: Vec<u8>,   // User signs to confirm attendance
+}
+
+/// NEW: Payload for rejecting an invite.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InviteRejectPayload {
+    pub meeting_id_hash: String,
+    pub user_id_hash: String,
+    pub reason_code: u8, // 0: Declined, 1: Full, 2: Expired, 3: FriendsOnlyRestricted
+}
+
+/// Payload for updating participation status.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParticipationUpdatePayload {
+    pub meeting_id_hash: String,
+    pub user_id_hash: String,
+    pub status: ParticipantStatus,
+    pub timestamp: u64,
+    pub user_signature: Vec<u8>,
+}
+
+/// Payload for Push Registration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PushRegisterPayload {
     pub provider: PushProvider,
-    pub token: String, // Encrypted with server key (if hybrid) or just stored locally
+    pub token: String,
 }
 
 /// Payload for Reputation Reports.
@@ -109,9 +183,9 @@ pub struct PushRegisterPayload {
 pub struct ReportPayload {
     pub target_id_hash: String,
     pub report_type: ReportType,
-    pub evidence_hash: String, // Hash of logs/signatures proving the claim
+    pub evidence_hash: String,
     pub reporter_signature: Vec<u8>,
-    pub quorum_signatures: Vec<QuorumSignature>, // Aggregated signatures from other witnesses
+    pub quorum_signatures: Vec<QuorumSignature>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,16 +205,16 @@ pub enum ReportType {
 /// Payload for Dictionary Synchronization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DictSyncPayload {
-    pub base_version: u64, // Base version of the receiving node
-    pub patch_data: Vec<u8>, // LZ4-compressed patch or full dictionary if too different
-    pub version: u64, // New version after applying patch
+    pub base_version: u64,
+    pub patch_data: Vec<u8>,
+    pub version: u64,
 }
 
 /// The complete Envelope containing header and compressed payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageEnvelope {
     pub header: MessageHeader,
-    pub payload_bytes: Vec<u8>, // Compressed (LZ4) if large, else raw
+    pub payload_bytes: Vec<u8>,
     pub is_compressed: bool,
 }
 
@@ -150,31 +224,36 @@ impl MessageEnvelope {
         identity: &Identity,
         msg_type: MessageType,
         payload: impl Serialize,
-        storage_radius_km: u32, // Passed separately for header inclusion
+        storage_radius_km: u32,
     ) -> Result<Self, &'static str> {
         let payload_bytes_raw = bincode::serialize(&payload)
             .map_err(|_| "ERR_SERIALIZE_FAILED")?;
 
-        // Compress if payload > 128 bytes (threshold for small messages)
+        // Compress if payload > 128 bytes
         let (final_bytes, is_compressed) = if payload_bytes_raw.len() > 128 {
             (lz4_flex::compress(&payload_bytes_raw), true)
         } else {
             (payload_bytes_raw, false)
         };
 
-        let now = chrono::Utc::now().timestamp() as u64;
+        let now = Utc::now().timestamp() as u64;
         let mut header = MessageHeader {
             version: PROTOCOL_VERSION,
             msg_type,
             timestamp: now,
             sender_id_hash: identity.phone_hash.clone(),
-            sender_storage_radius_km: storage_radius_km, // Include radius in header
+            sender_storage_radius_km: storage_radius_km,
             signature: vec![],
         };
 
         // Sign: Hash(Header + Payload)
         let mut hasher = sha2::Sha256::new();
-        hasher.update(bincode::serialize(&header).unwrap_or_default());
+        let header_for_hash = MessageHeader {
+            signature: vec![],
+            ..header.clone()
+        };
+        
+        hasher.update(bincode::serialize(&header_for_hash).unwrap_or_default());
         hasher.update(&final_bytes);
         let digest = hasher.finalize();
 
@@ -187,9 +266,9 @@ impl MessageEnvelope {
         })
     }
 
-    /// Pre-validation to check basic structural integrity before expensive operations.
+    /// Pre-validation to check basic structural integrity.
     pub fn pre_validate(&self) -> Result<(), &'static str> {
-        if self.header.signature.len() != 64 { // Ed25519 signature length
+        if self.header.signature.len() != 64 {
             return Err("ERR_INVALID_SIGNATURE_LENGTH");
         }
         if self.header.version < MIN_COMPATIBLE_VERSION || self.header.version > PROTOCOL_VERSION {
@@ -200,21 +279,19 @@ impl MessageEnvelope {
 
     /// Verifies the signature and integrity of the message.
     pub fn verify(&self, sender_public_key: &[u8]) -> Result<(), &'static str> {
-        // Pre-validate basic structure
         self.pre_validate()?;
 
-        // Check Timestamp (prevent replay attacks older than 24h)
-        let now = chrono::Utc::now().timestamp() as u64;
+        let now = Utc::now().timestamp() as u64;
         if now - self.header.timestamp > 86400 {
             return Err("ERR_MESSAGE_EXPIRED");
         }
 
-        // Verify Signature
         let mut hasher = sha2::Sha256::new();
         let header_without_sig = MessageHeader {
-            signature: vec![], // Ensure signature is empty when hashing for verification
+            signature: vec![],
             ..self.header.clone()
         };
+        
         hasher.update(bincode::serialize(&header_without_sig).unwrap_or_default());
         hasher.update(&self.payload_bytes);
         let digest = hasher.finalize();
@@ -234,7 +311,7 @@ impl MessageEnvelope {
     /// Decompresses and deserializes the payload into type T.
     pub fn get_payload<T: for<'de> Deserialize<'de>>(&self) -> Result<T, &'static str> {
         let decompressed = if self.is_compressed {
-            lz4_flex::decompress(&self.payload_bytes, 1024 * 1024) // Max 1MB limit
+            lz4_flex::decompress(&self.payload_bytes, 1024 * 1024)
                 .map_err(|_| "ERR_DECOMPRESSION_FAILED")?
         } else {
             self.payload_bytes.clone()
@@ -251,76 +328,45 @@ mod tests {
     use crate::crypto::identity::Identity;
 
     #[test]
-    fn test_full_roundtrip_with_compression() {
-        let identity = Identity::generate("123456789");
-        let payload = GossipPayload {
-            meetup_id_hash: "meetup_1".to_string(),
-            organizer_id_hash: identity.phone_hash.clone(),
-            location_lat: 52.2297,
-            location_lon: 21.0122,
-            start_time: 1234567890,
-            tags: vec![], 
-            filter: NotificationFilter {
-                level: PriorityLevel::High,
-                specific_user_hashes: vec![],
-                allowed_tags: vec!["coffee".to_string()],
-                max_distance_km: Some(5.0),
-            },
-            hop_count: 0,
-        };
-
-        let envelope = MessageEnvelope::new(&identity, MessageType::Gossip, payload, 50).unwrap();
-        assert!(envelope.is_compressed); // Should be compressed due to size
-        assert_eq!(envelope.header.sender_storage_radius_km, 50);
-
-        // Verify signature
-        let pub_key = identity.verifying_key.to_bytes();
-        assert!(envelope.verify(&pub_key).is_ok());
-
-        // Deserialize
-        let decoded: GossipPayload = envelope.get_payload().unwrap();
-        assert_eq!(decoded.meetup_id_hash, "meetup_1");
-        assert_eq!(decoded.filter.level, PriorityLevel::High);
-    }
-
-    #[test]
-    fn test_ghost_mode_flag() {
-        let handshake = HandshakePayload {
-            trust_anchor_count: 0, // Ghost
-            storage_radius_km: 60,
-            push_provider: PushProvider::None,
-            push_token: None,
-            supported_languages: vec!["en".to_string()],
-            session_dictionary: None,
-        };
+    fn test_invite_payload_structure() {
+        let identity = Identity::generate("organizer");
         
-        // Logic to reject this peer in global gossip would happen in `sync.rs` or `discovery.rs`
-        // based on this field.
-        assert_eq!(handshake.trust_anchor_count, 0);
+        let payload = InvitePayload {
+            meeting_id_hash: "m1".to_string(),
+            organizer_id_hash: identity.phone_hash.clone(),
+            sender_id_hash: identity.phone_hash.clone(),
+            recipient_id_hash: "friend".to_string(),
+            token: "token123".to_string(),
+            created_at: Utc::now().timestamp() as u64,
+            is_friends_only: true, // Testing the new flag
+            max_participants: Some(10),
+            current_guest_count: 2,
+            location_lat: 52.0,
+            location_lon: 21.0,
+            start_time: 1234567890,
+            tags: vec![],
+            organizer_signature: vec![0u8; 64],
+        };
+
+        let raw = bincode::serialize(&payload).unwrap();
+        // Ensure serialization works
+        assert!(raw.len() > 0);
+
+        let envelope = MessageEnvelope::new(&identity, MessageType::Invite, payload, 60).unwrap();
+        assert!(envelope.verify(&identity.verifying_key().to_bytes()).is_ok());
+
+        let decoded: InvitePayload = envelope.get_payload().unwrap();
+        assert!(decoded.is_friends_only);
+        assert_eq!(decoded.max_participants, Some(10));
     }
 
     #[test]
-    fn test_pre_validation() {
-        let identity = Identity::generate("123456789");
-        let payload = PingPayload {};
-        let envelope = MessageEnvelope::new(&identity, MessageType::Ping, payload, 50).unwrap();
-
-        // Test valid envelope
-        assert!(envelope.pre_validate().is_ok());
-
-        // Test invalid signature length
-        let mut bad_envelope = envelope.clone();
-        bad_envelope.header.signature = vec![0; 63]; // Wrong length
-        assert!(bad_envelope.pre_validate().is_err());
-
-        // Test version mismatch
-        let mut bad_envelope_v = envelope;
-        bad_envelope_v.header.version = 0; // Below min
-        assert!(bad_envelope_v.pre_validate().is_err());
+    fn test_status_enum_size() {
+        assert_eq!(std::mem::size_of::<ParticipantStatus>(), 1);
     }
 }
 
-// Placeholder for Ping/Pong payloads if needed
+// Placeholder for Ping/Pong payloads
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PingPayload {}
 

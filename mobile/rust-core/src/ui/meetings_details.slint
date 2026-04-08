@@ -1,0 +1,256 @@
+// mobile/rust-core/src/ui/components/meeting_details.slint
+// Meeting Details View: Lazy Loaded, Dynamic Mini-Map (User + Meeting), Dual Action.
+// Features: Auto-zoom to fit both points, Click-to-Navigate (System Map).
+// Year: 2026 | Slint Version: 1.6+
+
+import { VerticalLayout, HorizontalLayout, Text, Button, Rectangle, ScrollView, Image } from "std-widgets.slint";
+
+export component MeetingDetails inherits Rectangle {
+    width: 100%;
+    height: 100%;
+    background: #FFFFFF;
+
+    in-out property <string> meeting_id: "";
+    in-out property <string> language: "en";
+    
+    // State for Lazy Loading
+    in-out property <bool> is_loading: true;
+    
+    // Meeting Data (Populated by Rust on demand)
+    property <string> title_tags: "";
+    property <string> organizer_name: "";
+    property <int> organizer_reputation: 0;
+    property <string> time_full: ""; 
+    property <string> location_name: "";
+    
+    // Coordinates for Map Rendering
+    property <float> user_lat: 0.0;
+    property <float> user_lon: 0.0;
+    property <float> meeting_lat: 0.0;
+    property <float> meeting_lon: 0.0;
+    
+    property <[string]> all_tags: []; 
+    property <[string]> guest_names: [];
+    property <int> guest_count: 0;
+    
+    // User Status
+    in-out property <bool> user_is_interested: false; 
+    in-out property <bool> user_is_attending: false;  
+
+    // Callbacks
+    callback on_close();
+    callback on_toggle_maybe(); 
+    callback on_confirm_attendance(); 
+    callback on_cancel_attendance(); 
+    callback on_open_reminder_settings();
+    
+    // NEW: Callback to open system map with navigation
+    callback on_open_system_navigation(float lat, float lon);
+
+    VerticalLayout {
+        spacing: 0px;
+        width: 100%;
+        height: 100%;
+
+        // --- Header ---
+        Rectangle {
+            height: 50px;
+            width: 100%;
+            background: #F5F5F5;
+            border-bottom-width: 1px;
+            border-bottom-color: #000000;
+            
+            HorizontalLayout {
+                alignment: left;
+                padding: 10px;
+                Button {
+                    text: "←";
+                    font-size: 20px;
+                    background: transparent;
+                    clicked => root.on_close();
+                }
+                Text {
+                    text: tr("KEY_MEETING_DETAILS");
+                    font-size: 16px;
+                    font-weight: bold;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        if (root.is_loading) {
+            VerticalLayout {
+                alignment: center;
+                vertical-alignment: center;
+                Text { text: tr("KEY_LOADING_DETAILS"); font-style: italic; }
+            }
+        } else {
+            ScrollView {
+                width: 100%;
+                height: 100%;
+                
+                VerticalLayout {
+                    spacing: 15px;
+                    padding: 15px;
+                    width: 100%;
+
+                    // 1. Title
+                    Text {
+                        text: root.title_tags;
+                        font-size: 22px;
+                        font-weight: bold;
+                        wrap: word-wrap;
+                    }
+
+                    // 2. Time & Location Name
+                    VerticalLayout {
+                        spacing: 5px;
+                        Rectangle { width: 100%; height: 1px; background: #CCCCCC; }
+                        Text { text: root.time_full; font-size: 16px; font-weight: bold; }
+                        Text { text: root.location_name; font-size: 14px; color: #333333; }
+                    }
+
+                    // 3. Interactive Mini-Map (User + Meeting)
+                    Rectangle {
+                        width: 100%;
+                        height: 200px;
+                        background: #EEEEEE;
+                        border-width: 1px;
+                        border-color: #000000;
+                        
+                        // Clickable Area to open System Map
+                        TouchArea {
+                            clicked => {
+                                // Open system navigation to meeting coordinates
+                                root.on_open_system_navigation(root.meeting_lat, root.meeting_lon);
+                            }
+                        }
+
+                        // Map Image (Rendered by Rust: Static tile centered & zoomed to fit User+Meeting)
+                        Image {
+                            source: @image-url("static_map_render.png"); 
+                            width: parent.width;
+                            height: parent.height;
+                            object-fit: cover;
+                        }
+                        
+                        // Overlays are technically drawn by Rust into the image buffer for performance,
+                        // but for Slint preview we can simulate pins if needed. 
+                        // In production, Rust sends a pre-rendered image with pins included.
+                        
+                        // Optional: Hint text
+                        Text {
+                            x: 5px;
+                            y: 5px;
+                            text: tr("KEY_TAP_FOR_NAVIGATION");
+                            font-size: 10px;
+                            color: #000000;
+                            background: #FFFFFF;
+                            opacity: 0.8;
+                            padding: 2px;
+                        }
+                    }
+
+                    // 4. Organizer
+                    HorizontalLayout {
+                        spacing: 10px;
+                        Text { text: tr("KEY_ORGANIZER"); font-weight: bold; }
+                        Text { text: `${root.organizer_name} (Rep: ${root.organizer_reputation})`; }
+                    }
+
+                    // 5. All Tags
+                    VerticalLayout {
+                        spacing: 5px;
+                        Text { text: tr("KEY_ALL_TAGS"); font-weight: bold; }
+                        for tag : Text {
+                            text: tag;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    // 6. Guests
+                    VerticalLayout {
+                        spacing: 5px;
+                        Text { text: tr("KEY_GUESTS_COUNT"); text-format: tr("KEY_GUESTS_COUNT_FMT", root.guest_count); font-weight: bold; }
+                        ScrollView {
+                            height: 100px;
+                            width: 100%;
+                            border-width: 1px;
+                            border-color: #CCCCCC;
+                            VerticalLayout {
+                                for guest : Text {
+                                    text: guest;
+                                    font-size: 14px;
+                                }
+                            }
+                        }
+                    }
+
+                    // 7. Actions
+                    Rectangle { width: 100%; height: 1px; background: #000000; }
+                    Text { text: tr("KEY_YOUR_STATUS"); font-weight: bold; horizontal-alignment: center; }
+                    
+                    Text {
+                        text: {
+                            if (root.user_is_attending) { tr("STATUS_ATTENDING"); }
+                            else if (root.user_is_interested) { tr("STATUS_INTERESTED"); }
+                            else { tr("STATUS_NONE"); }
+                        };
+                        horizontal-alignment: center;
+                        font-style: italic;
+                        color: root.user_is_attending ? #000000 : #555555;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 10px;
+                        alignment: center;
+                        
+                        // MOŻE
+                        Button {
+                            text: tr("ACTION_MAYBE");
+                            min-width: 120px;
+                            background: root.user_is_interested && !root.user_is_attending ? #555555 : #FFFFFF;
+                            color: root.user_is_interested && !root.user_is_attending ? #FFFFFF : #000000;
+                            border-width: 1px;
+                            border-color: #000000;
+                            clicked => {
+                                if (root.user_is_attending) {
+                                    root.on_cancel_attendance(); 
+                                    root.on_toggle_maybe();
+                                } else {
+                                    root.on_toggle_maybe();
+                                }
+                            }
+                        }
+
+                        // UCZESTNICZĘ
+                        Button {
+                            text: tr("ACTION_ATTENDING");
+                            min-width: 140px;
+                            background: root.user_is_attending ? #000000 : #FFFFFF;
+                            color: root.user_is_attending ? #FFFFFF : #000000;
+                            border-width: 2px;
+                            border-color: #000000;
+                            clicked => {
+                                if (root.user_is_attending) {
+                                    root.on_cancel_attendance();
+                                } else {
+                                    root.on_confirm_attendance();
+                                }
+                            }
+                        }
+                    }
+                    
+                    Button {
+                        text: tr("ACTION_CHANGE_REMINDER_TIME");
+                        font-size: 11px;
+                        background: transparent;
+                        text-decoration: underline;
+                        clicked => root.on_open_reminder_settings();
+                    }
+                }
+            }
+        }
+    }
+}

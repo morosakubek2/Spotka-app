@@ -1,7 +1,7 @@
 // mobile/rust-core/src/ffi/android.rs
-// Android FFI Layer: JNI Bindings for Spotka Core.
+// Android FFI Layer: JNI Bindings for Spotka Core (Private Mesh Edition).
 // Architecture: Zero-Copy where possible, Safe String Handling, Global JVM Context, Async Runtime.
-// Security: Memory safe conversions, Error keys instead of messages.
+// Security: Memory safe conversions, Error keys instead of messages, No raw key exposure.
 // Year: 2026 | Rust Edition: 2024
 
 use jni::objects::{JClass, JString, JObject, JValue, JByteArray, GlobalRef, AutoLocal};
@@ -13,15 +13,12 @@ use android_logger::Config;
 use tokio::runtime::Runtime;
 use crate::crypto::identity::Identity;
 use crate::db::manager::DbManager;
-use crate::app_controller::AppController;
+use crate::app_controller::AppController; // Assumed to exist with updated methods
 
 // --- Global State ---
 
-// Global JVM reference for callbacks to Kotlin
 static JVM: OnceLock<JavaVM> = OnceLock::new();
-// Global Tokio Runtime for async operations (DB, P2P)
 static RUNTIME: OnceLock<Arc<Runtime>> = OnceLock::new();
-// Global App Controller (Singleton logic)
 static APP_CONTROLLER: OnceLock<Arc<AppController>> = OnceLock::new();
 
 fn get_jvm() -> &'static JavaVM {
@@ -32,38 +29,37 @@ fn get_runtime() -> &'static Arc<Runtime> {
     RUNTIME.get().expect("Runtime not initialized.")
 }
 
+fn get_controller() -> &'static Arc<AppController> {
+    APP_CONTROLLER.get().expect("Controller not initialized.")
+}
+
 // --- Helper Functions for Safe JNI ---
 
-/// Converts Java String to Rust String. Returns error key on failure.
 fn jstring_to_rust(env: &JNIEnv, obj: JString) -> Result<String, &'static str> {
     env.get_string(&obj)
         .map(|s| s.into())
         .map_err(|_| "ERR_JNI_STRING_CONVERSION_FAILED")
 }
 
-/// Converts Rust String to Java String.
 fn rust_to_jstring<'local>(env: &JNIEnv<'local>, s: &str) -> Result<JString<'local>, &'static str> {
     env.new_string(s)
         .map_err(|_| "ERR_JNI_NEW_STRING_FAILED")
 }
 
-/// Converts Java ByteArray to Rust Vec<u8>.
 fn jbytearray_to_rust(env: &JNIEnv, obj: JByteArray) -> Result<Vec<u8>, &'static str> {
     env.convert_byte_array(obj)
         .map_err(|_| "ERR_JNI_BYTE_ARRAY_CONVERSION_FAILED")
 }
 
-/// Converts Rust Vec<u8> to Java ByteArray.
 fn rust_to_jbytearray<'local>(env: &JNIEnv<'local>, data: &[u8]) -> Result<JByteArray<'local>, &'static str> {
     env.byte_array_from_slice(data)
         .map_err(|_| "ERR_JNI_BYTE_ARRAY_CREATION_FAILED")
 }
 
-/// Helper to return an error key as a Java String.
 fn return_error_key<'local>(env: &JNIEnv<'local>, key: &str) -> jstring {
     match rust_to_jstring(env, key) {
         Ok(s) => s.into_raw(),
-        Err(_) => std::ptr::null_mut(), // Critical failure
+        Err(_) => std::ptr::null_mut(),
     }
 }
 
@@ -77,14 +73,12 @@ pub extern "system" fn Java_com_spotka_SpotkaCore_initSpotka(
 ) {
     info!("MSG_ANDROID_FFI_INIT_START");
 
-    // 1. Initialize Logger (Android Logcat)
     android_logger::init_once(
         Config::default()
             .with_max_level(log::LevelFilter::Info)
             .with_tag("SpotkaCore"),
     );
 
-    // 2. Store Global JVM reference
     let vm = match env.get_java_vm() {
         Ok(v) => v,
         Err(e) => {
@@ -98,7 +92,6 @@ pub extern "system" fn Java_com_spotka_SpotkaCore_initSpotka(
         return;
     }
 
-    // 3. Initialize Tokio Runtime (Multi-threaded)
     let runtime = Arc::new(
         Runtime::new().expect("Failed to create Tokio runtime")
     );
@@ -107,9 +100,9 @@ pub extern "system" fn Java_com_spotka_SpotkaCore_initSpotka(
         return;
     }
 
-    // 4. Initialize Core Logic (Placeholder for actual dependency injection)
-    // In real app, we might pass paths from 'context' here
-    let controller = AppController::new(); // Simplified
+    // Initialize Controller with dependencies (DB, Identity, etc.)
+    // In a real app, paths and config would come from 'context'
+    let controller = AppController::new(); 
     if APP_CONTROLLER.set(Arc::new(controller)).is_err() {
         error!("ERR_CONTROLLER_ALREADY_INITIALIZED");
         return;
@@ -133,14 +126,13 @@ pub extern "system" fn Java_com_spotka_SpotkaCore_generateIdentity(
 
     match Identity::generate(&phone) {
         Ok(identity) => {
-            // Return Public Key as Hex String
-            let pub_key_hex = hex::encode(identity.verifying_key.as_bytes());
+            let pub_key_hex = hex::encode(identity.verifying_key().to_bytes());
             match rust_to_jstring(&env, &pub_key_hex) {
                 Ok(s) => s.into_raw(),
                 Err(e) => return_error_key(&env, e),
             }
         },
-        Err(e) => return_error_key(&env, &e.to_string()), // IdentityError implements Display
+        Err(e) => return_error_key(&env, "ERR_IDENTITY_GENERATION_FAILED"),
     }
 }
 
@@ -148,7 +140,7 @@ pub extern "system" fn Java_com_spotka_SpotkaCore_generateIdentity(
 pub extern "system" fn Java_com_spotka_SpotkaCore_signData(
     mut env: JNIEnv,
     _class: JClass,
-    private_key_seed: JByteArray, // Securely passed from Keystore
+    private_key_seed: JByteArray, 
     data: JByteArray,
 ) -> jbyteArray {
     let seed = match jbytearray_to_rust(&env, private_key_seed) {
@@ -167,9 +159,16 @@ pub extern "system" fn Java_com_spotka_SpotkaCore_signData(
         }
     };
 
-    // Reconstruct key and sign (Simplified - in prod use secure enclave handle)
-    // Note: Passing raw seed is risky, better to pass a handle ID if possible
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed.try_into().unwrap_or([0u8;32]));
+    // Reconstruct key and sign
+    let seed_arr: [u8; 32] = match seed.try_into() {
+        Ok(arr) => arr,
+        Err(_) => {
+            error!("ERR_INVALID_SEED_LENGTH");
+            return std::ptr::null_mut();
+        }
+    };
+    
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed_arr);
     let signature = signing_key.sign(&data_vec);
 
     match rust_to_jbytearray(&env, &signature.to_bytes()) {
@@ -201,11 +200,9 @@ pub extern "system" fn Java_com_spotka_SpotkaCore_openDatabase(
 
     let rt = get_runtime();
     
-    // Run async initialization on the global runtime
     rt.block_on(async {
         match DbManager::new(&path, &token).await {
             Ok(_manager) => {
-                // In real app, store manager in a global map or Controller
                 info!("MSG_DB_OPENED_SUCCESS");
                 JNI_TRUE
             },
@@ -227,16 +224,11 @@ pub extern "system" fn Java_com_spotka_SpotkaCore_startP2PNode(
     info!("MSG_ANDROID_P2P_START_REQUEST");
     
     let rt = get_runtime();
-    let controller = match APP_CONTROLLER.get() {
-        Some(c) => c.clone(),
-        None => return return_error_key(&env, "ERR_CONTROLLER_NOT_INIT"),
-    };
+    let controller = get_controller().clone();
 
-    // Spawn P2P node in background task
     rt.spawn(async move {
         if let Err(e) = controller.start_p2p().await {
             error!("ERR_P2P_START_FAILED: {}", e);
-            // Notify UI about failure
             notify_ui_event("P2P_ERROR", &e.to_string());
         } else {
             info!("MSG_P2P_NODE_STARTED_SUCCESS");
@@ -250,10 +242,174 @@ pub extern "system" fn Java_com_spotka_SpotkaCore_startP2PNode(
     }
 }
 
+// --- NEW: Meeting & Invite Bridges (Private Mesh) ---
+
+/// Creates a meeting with optional "Friends Only" restriction.
+#[no_mangle]
+pub extern "system" fn Java_com_spotka_SpotkaCore_createMeeting(
+    mut env: JNIEnv,
+    _class: JClass,
+    meeting_data_json: JString, // Contains lat, lon, time, tags, etc.
+    is_friends_only: jboolean,
+    max_participants: jint,
+) -> jstring {
+    let json = match jstring_to_rust(&env, meeting_data_json) {
+        Ok(j) => j,
+        Err(e) => return return_error_key(&env, e),
+    };
+
+    let friends_only = is_friends_only == JNI_TRUE;
+    let max_part = if max_participants > 0 { Some(max_participants as u32) } else { None };
+
+    let rt = get_runtime();
+    let controller = get_controller().clone();
+
+    // Spawn async task
+    rt.spawn(async move {
+        match controller.create_meeting(&json, friends_only, max_part).await {
+            Ok(meeting_id) => {
+                info!("MSG_MEETING_CREATED: {}", meeting_id);
+                notify_ui_event("MEETING_CREATED", &meeting_id);
+            },
+            Err(e) => {
+                error!("ERR_CREATE_MEETING_FAILED: {}", e);
+                notify_ui_event("MEETING_ERROR", &e.to_string());
+            }
+        }
+    });
+
+    match rust_to_jstring(&env, "MSG_MEETING_CREATING_ASYNC") {
+        Ok(s) => s.into_raw(),
+        Err(e) => return_error_key(&env, e),
+    }
+}
+
+/// Sends an invite to a specific user (by Phone Hash or User ID).
+#[no_mangle]
+pub extern "system" fn Java_com_spotka_SpotkaCore_sendInvite(
+    mut env: JNIEnv,
+    _class: JClass,
+    meeting_id: JString,
+    target_user_hash: JString,
+) -> jstring {
+    let m_id = match jstring_to_rust(&env, meeting_id) {
+        Ok(s) => s,
+        Err(e) => return return_error_key(&env, e),
+    };
+    let t_hash = match jstring_to_rust(&env, target_user_hash) {
+        Ok(s) => s,
+        Err(e) => return return_error_key(&env, e),
+    };
+
+    let rt = get_runtime();
+    let controller = get_controller().clone();
+
+    rt.spawn(async move {
+        match controller.send_invite(&m_id, &t_hash).await {
+            Ok(_) => {
+                info!("MSG_INVITE_SENT: {} -> {}", m_id, t_hash);
+                notify_ui_event("INVITE_SENT_OK", &m_id);
+            },
+            Err(e) => {
+                error!("ERR_SEND_INVITE_FAILED: {}", e);
+                // Specific error codes for UI handling
+                let err_code = if e.contains("NOT_IN_NETWORK") { "ERR_TARGET_NOT_IN_NETWORK" } 
+                               else if e.contains("FRIENDS_ONLY") { "ERR_FRIENDS_ONLY_RESTRICTED" }
+                               else { "ERR_INVITE_SEND_FAILED" };
+                notify_ui_event("INVITE_ERROR", err_code);
+            }
+        }
+    });
+
+    match rust_to_jstring(&env, "MSG_INVITE_SENDING_ASYNC") {
+        Ok(s) => s.into_raw(),
+        Err(e) => return_error_key(&env, e),
+    }
+}
+
+/// Accepts an invite.
+#[no_mangle]
+pub extern "system" fn Java_com_spotka_SpotkaCore_acceptInvite(
+    mut env: JNIEnv,
+    _class: JClass,
+    meeting_id: JString,
+    token: JString,
+) -> jstring {
+    let m_id = match jstring_to_rust(&env, meeting_id) {
+        Ok(s) => s,
+        Err(e) => return return_error_key(&env, e),
+    };
+    let tok = match jstring_to_rust(&env, token) {
+        Ok(s) => s,
+        Err(e) => return return_error_key(&env, e),
+    };
+
+    let rt = get_runtime();
+    let controller = get_controller().clone();
+
+    rt.spawn(async move {
+        match controller.accept_invite(&m_id, &tok).await {
+            Ok(_) => {
+                info!("MSG_INVITE_ACCEPTED: {}", m_id);
+                notify_ui_event("INVITE_ACCEPTED_OK", &m_id);
+            },
+            Err(e) => {
+                error!("ERR_ACCEPT_INVITE_FAILED: {}", e);
+                let err_code = if e.contains("FULL") { "ERR_MEETING_FULL" } 
+                               else { "ERR_INVITE_INVALID" };
+                notify_ui_event("INVITE_ERROR", err_code);
+            }
+        }
+    });
+
+    match rust_to_jstring(&env, "MSG_INVITE_ACCEPTING_ASYNC") {
+        Ok(s) => s.into_raw(),
+        Err(e) => return_error_key(&env, e),
+    }
+}
+
+/// Rejects an invite.
+#[no_mangle]
+pub extern "system" fn Java_com_spotka_SpotkaCore_rejectInvite(
+    mut env: JNIEnv,
+    _class: JClass,
+    meeting_id: JString,
+    token: JString,
+    reason_code: jint, // 0: Declined, 1: Full, 2: Expired
+) -> jstring {
+    let m_id = match jstring_to_rust(&env, meeting_id) {
+        Ok(s) => s,
+        Err(e) => return return_error_key(&env, e),
+    };
+    let tok = match jstring_to_rust(&env, token) {
+        Ok(s) => s,
+        Err(e) => return return_error_key(&env, e),
+    };
+
+    let rt = get_runtime();
+    let controller = get_controller().clone();
+
+    rt.spawn(async move {
+        match controller.reject_invite(&m_id, &tok, reason_code as u8).await {
+            Ok(_) => {
+                info!("MSG_INVITE_REJECTED: {}", m_id);
+                notify_ui_event("INVITE_REJECTED_OK", &m_id);
+            },
+            Err(e) => {
+                error!("ERR_REJECT_INVITE_FAILED: {}", e);
+                notify_ui_event("INVITE_ERROR", &e.to_string());
+            }
+        }
+    });
+
+    match rust_to_jstring(&env, "MSG_INVITE_REJECTING_ASYNC") {
+        Ok(s) => s.into_raw(),
+        Err(e) => return_error_key(&env, e),
+    }
+}
+
 // --- Callback Mechanism (Event Bus) ---
 
-/// Called by Rust internal logic to update UI (e.g., new message received, peer discovered).
-/// Safely attaches to JVM and calls a static method in Kotlin.
 pub fn notify_ui_event(event_name: &str, data: &str) {
     let vm = match get_jvm().attach_current_thread() {
         Ok(e) => e,
@@ -263,7 +419,6 @@ pub fn notify_ui_event(event_name: &str, data: &str) {
         }
     };
 
-    // Use AutoLocal to ensure references are cleaned up automatically
     let class_result = vm.find_class("com/spotka/SpotkaCore");
     if let Ok(class) = class_result {
         let j_event = vm.new_string(event_name);
@@ -298,11 +453,6 @@ pub extern "system" fn Java_com_spotka_SpotkaCore_shutdown(
         rt.block_on(async {
             controller.shutdown().await;
         });
-    }
-
-    // Detach thread if necessary (usually handled by JVM, but good practice)
-    if let Ok(jni_env) = get_jvm().attach_current_thread() {
-        // Clean up any pending locals if needed
     }
 
     info!("MSG_ANDROID_FFI_SHUTDOWN_COMPLETE");

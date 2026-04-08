@@ -1,0 +1,213 @@
+// mobile/rust-core/src/ui/meetings_view.slint
+// Main Meetings Container: Toggles between List/Map, includes Filters & Details.
+// Logic: 
+// - "MAYBE" = Local reminder only (Private, no reputation impact).
+// - "PARTICIPATE" = Public declaration (Impacts reputation if absent).
+// Year: 2026 | Slint Version: 1.6+
+
+import { VerticalLayout, HorizontalLayout, Text, Button, Rectangle, TextInput } from "std-widgets.slint";
+import { MeetingsList } from "meetings_list.slint";
+import { MeetingsMap } from "meetings_map.slint";
+import { MeetingDetails } from "components/meeting_details.slint";
+
+export component MeetingsView inherits Rectangle {
+    width: 100%;
+    height: 100%;
+
+    in-out property <string> language: "en";
+    in-out property <bool> is_loading: false;
+    
+    // --- Callbacks to Rust Core ---
+    callback request_refresh_data();
+    callback request_create_meeting();
+    
+    // User clicks "MAYBE" -> Sets local reminder
+    callback request_set_maybe(string meeting_id, bool is_interested);
+    
+    // User clicks "PARTICIPATE" -> Confirms public attendance (Reputation risk)
+    callback request_confirm_participation(string meeting_id, bool confirmed);
+    
+    // User wants to change global reminder settings (e.g., 2h before)
+    callback request_open_settings();
+
+    // --- State Properties ---
+    in-out property <int> view_mode: 0; // 0 = List, 1 = Map
+    in-out property <bool> show_details: false;
+    in-out property <string> selected_meeting_id: "";
+    
+    // Filter State
+    in-out property <string> filter_tag: "";
+    in-out property <float> filter_max_distance: 50.0; // km
+    in-out property <int> filter_time_window: 24; // hours (24h, 72h, 168h)
+
+    VerticalLayout {
+        spacing: 0px;
+        width: 100%;
+        height: 100%;
+
+        // --- Top Bar: View Switcher & Filters ---
+        Rectangle {
+            height: 130px; 
+            width: 100%;
+            background: #F5F5F5;
+            border-bottom-width: 1px;
+            border-bottom-color: #000000;
+
+            VerticalLayout {
+                padding: 5px;
+                spacing: 5px;
+                
+                // Row 1: View Switcher + FAB
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: center;
+                    
+                    Button {
+                        text: tr("KEY_VIEW_LIST");
+                        min-width: 80px;
+                        background: root.view_mode == 0 ? #000000 : #FFFFFF;
+                        color: root.view_mode == 0 ? #FFFFFF : #000000;
+                        clicked => root.view_mode = 0;
+                    }
+                    Button {
+                        text: tr("KEY_VIEW_MAP");
+                        min-width: 80px;
+                        background: root.view_mode == 1 ? #000000 : #FFFFFF;
+                        color: root.view_mode == 1 ? #FFFFFF : #000000;
+                        clicked => root.view_mode = 1;
+                    }
+                    Rectangle { width: 100%; height: 1px; background: transparent; }
+                    Button {
+                        text: "+";
+                        font-size: 20px;
+                        min-width: 40px;
+                        border-radius: 20px;
+                        background: #000000;
+                        color: #FFFFFF;
+                        clicked => root.request_create_meeting();
+                    }
+                }
+
+                // Row 2: Filters
+                HorizontalLayout {
+                    spacing: 5px;
+                    alignment: left;
+                    
+                    // Tag Filter
+                    TextInput {
+                        placeholder-text: tr("KEY_FILTER_TAG");
+                        text <=> root.filter_tag;
+                        font-size: 12px;
+                        min-width: 80px;
+                    }
+                    
+                    // Distance Filter (Display only, click handled in Rust for slider)
+                    TextInput {
+                        placeholder-text: tr("KEY_FILTER_DIST");
+                        text: `${root.filter_max_distance} km`;
+                        font-size: 12px;
+                        min-width: 60px;
+                        readonly: true; 
+                    }
+
+                    // Time Filter
+                    Button {
+                        text: {
+                            if (root.filter_time_window == 24) { tr("KEY_TIME_24H"); }
+                            else if (root.filter_time_window == 72) { tr("KEY_TIME_3D"); }
+                            else { tr("KEY_TIME_7D"); }
+                        };
+                        font-size: 12px;
+                        min-width: 60px;
+                        clicked => {
+                            // Cycle: 24h -> 72h (3d) -> 168h (7d) -> 24h
+                            if (root.filter_time_window == 24) { root.filter_time_window = 72; }
+                            else if (root.filter_time_window == 72) { root.filter_time_window = 168; }
+                            else { root.filter_time_window = 24; }
+                            
+                            // Notify Rust to apply filters
+                            root.request_refresh_data();
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Content Area ---
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            background: #FFFFFF;
+
+            // Show Details Overlay (Lazy Loaded)
+            if (root.show_details) {
+                MeetingDetails {
+                    width: parent.width;
+                    height: parent.height;
+                    meeting_id: root.selected_meeting_id;
+                    language <=> root.language;
+                    
+                    // Close details
+                    on_close: {
+                        root.show_details = false;
+                    }
+                    
+                    // User clicks "MAYBE" (Local Reminder)
+                    on_toggle_maybe: {
+                        root.request_set_maybe(root.selected_meeting_id, true); 
+                        root.show_details = false;
+                    }
+
+                    // User clicks "PARTICIPATE" (Public Commitment)
+                    on_confirm_participation: {
+                        root.request_confirm_participation(root.selected_meeting_id, true);
+                        root.show_details = false;
+                    }
+
+                    // User wants to change reminder time settings
+                    on_open_settings: {
+                        root.request_open_settings();
+                    }
+                }
+            } else {
+                // Normal Views (List or Map)
+                if (root.view_mode == 0) {
+                    MeetingsList {
+                        width: parent.width;
+                        height: parent.height;
+                        language <=> root.language;
+                        is_loading <=> root.is_loading;
+                        
+                        // Pass filters down
+                        filter_tag <=> root.filter_tag;
+                        filter_max_distance <=> root.filter_max_distance;
+                        filter_time_window <=> root.filter_time_window;
+                        
+                        request_refresh_data <=> root.request_refresh_data;
+                        
+                        on_meeting_selected: {
+                            root.selected_meeting_id = meeting_id;
+                            root.show_details = true;
+                        }
+                    }
+                } else {
+                    MeetingsMap {
+                        width: parent.width;
+                        height: parent.height;
+                        language <=> root.language;
+                        
+                        // Pass filters down
+                        filter_tag <=> root.filter_tag;
+                        filter_max_distance <=> root.filter_max_distance;
+                        filter_time_window <=> root.filter_time_window;
+                        
+                        on_meeting_selected: {
+                            root.selected_meeting_id = meeting_id;
+                            root.show_details = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
