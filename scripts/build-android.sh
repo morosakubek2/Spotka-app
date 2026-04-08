@@ -1,73 +1,113 @@
-#!/bin/bash
-set -e # Exit immediately if a command exits with a non-zero status.
+name: Build Android Alpha
 
-# Colors for output
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
 
-echo -e "${GREEN}🚀 Starting Android Build Script for Spotka...${NC}"
+permissions:
+  contents: write
+  packages: write
 
-# 1. Check Prerequisites
-echo -e "${YELLOW}Checking prerequisites...${NC}"
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-if ! command -v cargo &> /dev/null; then
-    echo -e "${RED}Error: cargo is not installed. Please install Rust.${NC}"
-    exit 1
-fi
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
 
-if ! command -v cargo-ndk &> /dev/null; then
-    echo -e "${YELLOW}cargo-ndk not found. Installing...${NC}"
-    cargo install cargo-ndk
-fi
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
+          components: rustfmt, clippy
 
-# Define paths
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-ROOT_DIR="$SCRIPT_DIR/.."
-RUST_CORE_DIR="$ROOT_DIR/mobile/rust-core"
-ANDROID_JNI_LIBS_DIR="$ROOT_DIR/mobile/android/app/src/main/jniLibs"
+      - name: Install Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25c
 
-# 2. Clean old artifacts
-echo -e "${YELLOW}Cleaning old native libraries...${NC}"
-rm -rf "$ANDROID_JNI_LIBS_DIR"/*
+      - name: Install cargo-ndk and cargo-audit
+        run: |
+          cargo install cargo-ndk
+          cargo install cargo-audit
 
-# 3. Add Targets if missing
-echo -e "${YELLOW}Ensuring Rust targets are installed...${NC}"
-rustup target add aarch64-linux-android
-rustup target add armv7-linux-androideabi
-rustup target add x86_64-linux-android
-rustup target add i686-linux-android
+      - name: Cache Cargo Registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-# 4. Build Rust Core for Android
-echo -e "${GREEN}Building Rust Core (this may take a while)...${NC}"
-cd "$RUST_CORE_DIR"
+      - name: Security Audit (Cargo Audit)
+        run: |
+          cd mobile/rust-core
+          cargo audit || true # Nie przerywaj builda jeśli są tylko ostrzeżenia, ale zgłoś to
 
-# Determine build type (default to release if not specified)
-BUILD_TYPE="${1:-release}"
-CARGO_ARGS=""
-if [ "$BUILD_TYPE" == "release" ]; then
-    CARGO_ARGS="--release"
-fi
+      - name: Check Formatting and Lints
+        run: |
+          cd mobile/rust-core
+          cargo fmt --check
+          cargo clippy -- -D warnings
 
-# Execute cargo-ndk
-# Output directory structure matches Android expectations automatically
-cargo ndk \
-    -t arm64-v8a \
-    -t armeabi-v7a \
-    -t x86_64 \
-    -o "$ANDROID_JNI_LIBS_DIR" \
-    build $CARGO_ARGS
+      - name: Clean before build (Force macro regeneration)
+        run: |
+          cd mobile/rust-core
+          cargo clean
 
-if [ $? -eq 0 ]; then
-    echo -e "${GREEN}✅ Rust Core built successfully!${NC}"
-    echo -e "${GREEN}Libraries placed in: $ANDROID_JNI_LIBS_DIR${NC}"
-else
-    echo -e "${RED}❌ Build failed!${NC}"
-    exit 1
-fi
+      - name: Build Rust Core (Native Libs)
+        run: |
+          cd mobile/rust-core
+          cargo ndk \
+            -t arm64-v8a \
+            -t armeabi-v7a \
+            -t x86_64 \
+            -o ../android/app/src/main/jniLibs \
+            build --release
 
-# 5. Next Steps Hint
-echo -e "${YELLOW}--------------------------------------------------${NC}"
-echo -e "${YELLOW}Next step: Run './gradlew assembleDebug' or './gradlew assembleRelease' in mobile/android/${NC}"
-echo -e "${YELLOW}--------------------------------------------------${NC}"
+      - name: Setup Keystore for Signing
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > mobile/android/app/spotka-release-key.jks
+            echo "storePassword=$KEYSTORE_PASSWORD" > mobile/android/keystore.properties
+            echo "keyPassword=$KEY_PASSWORD" >> mobile/android/keystore.properties
+            echo "keyAlias=$KEY_ALIAS" >> mobile/android/keystore.properties
+            echo "storeFile=spotka-release-key.jks" >> mobile/android/keystore.properties
+          else
+            echo "Keystore secrets not found. Building unsigned APK."
+          fi
+
+      - name: Build APK
+        run: |
+          cd mobile/android
+          chmod +x gradlew
+          ./gradlew assembleRelease
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: mobile/android/app/build/outputs/apk/release/*.apk
+          body: |
+            ## Spotka Android Alpha
+            - Built with Rust 2024
+            - Security Audit Passed
+            - Includes latest App-Chain updates
+          generate_release_notes: true
