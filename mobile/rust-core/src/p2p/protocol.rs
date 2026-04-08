@@ -54,6 +54,7 @@ pub struct MessageHeader {
     pub msg_type: MessageType,
     pub timestamp: u64,
     pub sender_id_hash: String, // SHA256 of sender's phone number
+    pub sender_storage_radius_km: u32, // For quick geo-filtering without full payload deserialization
     pub signature: Vec<u8>,     // Ed25519 signature of the header + payload hash
 }
 
@@ -68,6 +69,7 @@ pub enum MessageType {
     Pong,
     PushRegister,
     Report, // For reputation reporting (NoShow, FakeProfile)
+    DictSync, // For dictionary synchronization
 }
 
 /// Payload for the Handshake message.
@@ -79,6 +81,7 @@ pub struct HandshakePayload {
     pub push_provider: PushProvider,
     pub push_token: Option<String>, // Encrypted token for wake-up
     pub supported_languages: Vec<String>, // e.g., ["pl", "en", "eo"]
+    pub session_dictionary: Option<Vec<u8>>, // Optional initial dictionary sync
 }
 
 /// Payload for Gossip messages (propagating meetup info).
@@ -108,6 +111,13 @@ pub struct ReportPayload {
     pub report_type: ReportType,
     pub evidence_hash: String, // Hash of logs/signatures proving the claim
     pub reporter_signature: Vec<u8>,
+    pub quorum_signatures: Vec<QuorumSignature>, // Aggregated signatures from other witnesses
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuorumSignature {
+    pub witness_id_hash: String,
+    pub signature: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,6 +126,14 @@ pub enum ReportType {
     FakeProfile,
     Aggression,
     Spam,
+}
+
+/// Payload for Dictionary Synchronization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DictSyncPayload {
+    pub base_version: u64, // Base version of the receiving node
+    pub patch_data: Vec<u8>, // LZ4-compressed patch or full dictionary if too different
+    pub version: u64, // New version after applying patch
 }
 
 /// The complete Envelope containing header and compressed payload.
@@ -132,6 +150,7 @@ impl MessageEnvelope {
         identity: &Identity,
         msg_type: MessageType,
         payload: impl Serialize,
+        storage_radius_km: u32, // Passed separately for header inclusion
     ) -> Result<Self, &'static str> {
         let payload_bytes_raw = bincode::serialize(&payload)
             .map_err(|_| "ERR_SERIALIZE_FAILED")?;
@@ -149,6 +168,7 @@ impl MessageEnvelope {
             msg_type,
             timestamp: now,
             sender_id_hash: identity.phone_hash.clone(),
+            sender_storage_radius_km: storage_radius_km, // Include radius in header
             signature: vec![],
         };
 
@@ -157,7 +177,7 @@ impl MessageEnvelope {
         hasher.update(bincode::serialize(&header).unwrap_or_default());
         hasher.update(&final_bytes);
         let digest = hasher.finalize();
-        
+
         header.signature = identity.sign(&digest).to_bytes().to_vec();
 
         Ok(MessageEnvelope {
@@ -167,12 +187,21 @@ impl MessageEnvelope {
         })
     }
 
-    /// Verifies the signature and integrity of the message.
-    pub fn verify(&self, sender_public_key: &[u8]) -> Result<(), &'static str> {
-        // Check Version
-        if self.header.version < MIN_COMPATIBLE_VERSION {
+    /// Pre-validation to check basic structural integrity before expensive operations.
+    pub fn pre_validate(&self) -> Result<(), &'static str> {
+        if self.header.signature.len() != 64 { // Ed25519 signature length
+            return Err("ERR_INVALID_SIGNATURE_LENGTH");
+        }
+        if self.header.version < MIN_COMPATIBLE_VERSION || self.header.version > PROTOCOL_VERSION {
             return Err("ERR_PROTOCOL_VERSION_MISMATCH");
         }
+        Ok(())
+    }
+
+    /// Verifies the signature and integrity of the message.
+    pub fn verify(&self, sender_public_key: &[u8]) -> Result<(), &'static str> {
+        // Pre-validate basic structure
+        self.pre_validate()?;
 
         // Check Timestamp (prevent replay attacks older than 24h)
         let now = chrono::Utc::now().timestamp() as u64;
@@ -182,13 +211,17 @@ impl MessageEnvelope {
 
         // Verify Signature
         let mut hasher = sha2::Sha256::new();
-        hasher.update(bincode::serialize(&self.header).unwrap_or_default()); // Note: header without sig or with empty sig
+        let header_without_sig = MessageHeader {
+            signature: vec![], // Ensure signature is empty when hashing for verification
+            ..self.header.clone()
+        };
+        hasher.update(bincode::serialize(&header_without_sig).unwrap_or_default());
         hasher.update(&self.payload_bytes);
         let digest = hasher.finalize();
 
         let sig = ed25519_dalek::Signature::from_slice(&self.header.signature)
             .map_err(|_| "ERR_INVALID_SIGNATURE_FORMAT")?;
-        
+
         let pub_key = ed25519_dalek::VerifyingKey::from_bytes(sender_public_key)
             .map_err(|_| "ERR_INVALID_PUBLIC_KEY")?;
 
@@ -236,8 +269,9 @@ mod tests {
             hop_count: 0,
         };
 
-        let envelope = MessageEnvelope::new(&identity, MessageType::Gossip, payload).unwrap();
+        let envelope = MessageEnvelope::new(&identity, MessageType::Gossip, payload, 50).unwrap();
         assert!(envelope.is_compressed); // Should be compressed due to size
+        assert_eq!(envelope.header.sender_storage_radius_km, 50);
 
         // Verify signature
         let pub_key = identity.verifying_key.to_bytes();
@@ -257,10 +291,38 @@ mod tests {
             push_provider: PushProvider::None,
             push_token: None,
             supported_languages: vec!["en".to_string()],
+            session_dictionary: None,
         };
         
         // Logic to reject this peer in global gossip would happen in `sync.rs` or `discovery.rs`
         // based on this field.
         assert_eq!(handshake.trust_anchor_count, 0);
     }
+
+    #[test]
+    fn test_pre_validation() {
+        let identity = Identity::generate("123456789");
+        let payload = PingPayload {};
+        let envelope = MessageEnvelope::new(&identity, MessageType::Ping, payload, 50).unwrap();
+
+        // Test valid envelope
+        assert!(envelope.pre_validate().is_ok());
+
+        // Test invalid signature length
+        let mut bad_envelope = envelope.clone();
+        bad_envelope.header.signature = vec![0; 63]; // Wrong length
+        assert!(bad_envelope.pre_validate().is_err());
+
+        // Test version mismatch
+        let mut bad_envelope_v = envelope;
+        bad_envelope_v.header.version = 0; // Below min
+        assert!(bad_envelope_v.pre_validate().is_err());
+    }
 }
+
+// Placeholder for Ping/Pong payloads if needed
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PingPayload {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PongPayload {}

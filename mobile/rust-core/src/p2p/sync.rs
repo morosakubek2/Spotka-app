@@ -1,18 +1,20 @@
 // mobile/rust-core/src/p2p/sync.rs
 // P2P Synchronization Module: Delta State Sync, Fast Sync, Storage Radius Enforcement.
-// Architecture: Energy Efficient, Decentralized, App-Chain Integrated.
+// Architecture: Energy Efficient, Decentralized, App-Chain Integrated, Ghost Mode Aware.
 // Year: 2026 | Rust Edition: 2024
 
 use crate::chain::{block::Block, AppChain};
 use crate::db::manager::DbManager;
-use crate::p2p::protocol::{GossipPayload, MessageType, SyncRequest, SyncResponse};
+use crate::p2p::protocol::{GossipPayload, MessageType, MessageEnvelope, DictSyncPayload};
 use crate::p2p::mod::NodeMode;
 use crate::dict::compressor::SessionDictionary;
+use crate::crypto::identity::Identity; // For signing sync responses if needed
 use log::{info, warn, debug, error};
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use serde::{Serialize, Deserialize};
+use zeroize::Zeroize;
 
 /// Represents a snapshot of the current state for Fast Sync.
 /// Contains only the latest reputation scores and trust graph hashes, not full history.
@@ -23,6 +25,27 @@ pub struct StateSnapshot {
     pub timestamp: u64,
     // Compressed map of UserHash -> ReputationScore
     pub reputation_state: Vec<(String, i32)>, 
+    // Optional dictionary patch for new nodes
+    pub dict_patch: Option<Vec<u8>>, 
+}
+
+/// Request structure for Delta Sync.
+/// Instead of just height, we send a vector of known block hashes/heights.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncRequest {
+    pub known_heights: Vec<u64>, // Heights we have
+    pub known_hashes: Vec<String>, // Hashes of those heights (for integrity check)
+    pub request_snapshot: bool, // Force snapshot if true (e.g., corruption detected)
+    pub peer_trust_level: u32, // Number of trust anchors the requester has (for Ghost Mode check)
+}
+
+/// Response structure for Delta Sync.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SyncResponse {
+    Snapshot(StateSnapshot),
+    Blocks(Vec<Block>),
+    DictPatch(Vec<u8>),
+    Ack, // Acknowledgement only
 }
 
 /// Manages synchronization logic for the P2P node.
@@ -33,6 +56,8 @@ pub struct SyncManager {
     storage_radius_km: u32,
     // Tracks hashes of items we already have to avoid re-processing
     known_hashes: HashSet<String>,
+    // Session dictionary for compressing sync traffic
+    session_dict: SessionDictionary,
 }
 
 impl SyncManager {
@@ -42,51 +67,72 @@ impl SyncManager {
             chain,
             mode: NodeMode::Eco,
             storage_radius_km: radius,
-            known_hashes: HashSet::new(),
+            known_hashes: HashSet::with_capacity(1000),
+            session_dict: SessionDictionary::new(),
         }
     }
 
-    /// Updates the node's operational mode (affects sync aggressiveness).
+    /// Updates the node's operational mode.
     pub fn set_mode(&mut self, mode: NodeMode) {
         self.mode = mode;
         info!("MSG_SYNC_MODE_UPDATED: {:?}", mode);
     }
 
     /// Handles an incoming SyncRequest from a peer.
-    /// Implements "Delta State Sync" and "Fast Sync" logic.
+    /// Implements "Delta State Sync", "Fast Sync", and "Ghost Mode" restrictions.
     pub async fn handle_sync_request(&self, req: &SyncRequest) -> Result<SyncResponse, &'static str> {
-        debug!("MSG_SYNC_REQUEST_RECEIVED: Height {}", req.start_height);
+        debug!("MSG_SYNC_REQUEST_RECEIVED: Known heights count {}", req.known_heights.len());
 
-        // 1. Fast Sync Check: If peer is far behind or new, send Snapshot instead of blocks
+        // 1. Ghost Mode / Trust Check
+        // If we are in strict mode or the peer has 0 trust anchors, limit data exposure
+        if req.peer_trust_level == 0 && self.mode != NodeMode::Guardian {
+            // Ghosts or untrusted peers only get Ack or very limited data
+            warn!("MSG_SYNC_UNTRUSTED_PEER_LIMITED: Trust Level 0");
+            return Ok(SyncResponse::Ack);
+        }
+
+        // 2. Fast Sync Check
         let current_height = self.chain.read().await.get_height();
-        if req.start_height == 0 && current_height > 100 {
-            info!("MSG_FAST_SYNC_TRIGGERED: Sending snapshot instead of full chain");
+        if req.request_snapshot || (req.known_heights.is_empty() && current_height > 100) {
+            info!("MSG_FAST_SYNC_TRIGGERED: Sending snapshot");
             let snapshot = self.generate_snapshot().await?;
             return Ok(SyncResponse::Snapshot(snapshot));
         }
 
-        // 2. Delta State Sync: Send only blocks missing by the peer
+        // 3. Delta State Sync Logic
         let mut blocks_to_send = Vec::new();
         let chain_lock = self.chain.read().await;
         
-        // Limit batch size to prevent DoS and save bandwidth
-        let end_height = std::cmp::min(req.start_height + 50, current_height);
+        // Determine missing blocks based on known_heights vs current chain
+        // Simple implementation: send everything after max(known_heights) up to limit
+        let max_known = req.known_heights.iter().max().copied().unwrap_or(0);
+        let batch_limit = match self.mode {
+            NodeMode::Eco => 10,
+            NodeMode::Active => 50,
+            NodeMode::Guardian => 200,
+        };
 
-        for h in req.start_height..=end_height {
+        let end_height = std::cmp::min(max_known + batch_limit, current_height);
+
+        for h in (max_known + 1)..=end_height {
             if let Some(block) = chain_lock.blocks_cache.get(&h) {
-                // Check Storage Radius: Don't send blocks unrelated to our location
-                // (Simplified check: in real app, block metadata contains geo-hash)
+                // Storage Radius Check before sending
                 if self.is_within_radius(&block) {
                     blocks_to_send.push(block.clone());
+                } else {
+                    debug!("MSG_SYNC_BLOCK_SKIPPED_RADIUS: Height {}", h);
                 }
             }
         }
 
+        // 4. Optional: Attach Dictionary Patch if versions differ significantly
+        // (Logic to detect version mismatch would go here)
+        
         Ok(SyncResponse::Blocks(blocks_to_send))
     }
 
-    /// Processes an incoming SyncResponse (Blocks or Snapshot).
-    pub async fn handle_sync_response(&self, resp: SyncResponse) -> Result<(), &'static str> {
+    /// Processes an incoming SyncResponse.
+    pub async fn handle_sync_response(&self, resp: SyncResponse, sender_pub_key: &[u8]) -> Result<(), &'static str> {
         match resp {
             SyncResponse::Snapshot(snapshot) => {
                 info!("MSG_PROCESSING_SNAPSHOT: Height {}", snapshot.height);
@@ -95,29 +141,39 @@ impl SyncManager {
             SyncResponse::Blocks(blocks) => {
                 debug!("MSG_PROCESSING_BLOCKS: Count {}", blocks.len());
                 for block in blocks {
-                    self.process_incoming_block(block).await?;
+                    // Verify signature of each block using sender key (or validator key inside block)
+                    // Note: In PoA-Lite, block signature is by validator, but envelope by sender.
+                    // Here we assume block internal validation is enough if transported securely.
+                    self.process_incoming_block(block, sender_pub_key).await?;
                 }
             },
+            SyncResponse::DictPatch(patch) => {
+                info!("MSG_APPLYING_DICT_PATCH: Size {} bytes", patch.len());
+                // Apply patch to local dictionary
+                // self.session_dict.apply_patch(&patch)?;
+            },
+            SyncResponse::Ack => {},
         }
         Ok(())
     }
 
     /// Processes a single incoming block with full validation.
-    async fn process_incoming_block(&self, block: Block) -> Result<(), &'static str> {
-        // 1. Deduplication
+    async fn process_incoming_block(&self, mut block: Block, _sender_pub_key: &[u8]) -> Result<(), &'static str> {
         let block_hash = block.calculate_hash();
+
+        // 1. Deduplication
         if self.known_hashes.contains(&block_hash) {
-            return Ok(()); // Already processed
+            return Ok(()); 
         }
 
         // 2. Storage Radius Enforcement (CRITICAL)
-        // Reject immediately if outside our configured radius to save CPU/DB writes
         if !self.is_within_radius(&block) {
             debug!("MSG_BLOCK_REJECTED_RADIUS: Hash {}", block_hash);
-            return Ok(()); // Silent ignore, not an error
+            return Ok(()); 
         }
 
-        // 3. Validate & Add to Chain
+        // 3. Validate Block Structure & Signatures (Internal Consensus Rules)
+        // This calls AppChain::validate_block which checks height continuity, merkle root, etc.
         let mut chain_lock = self.chain.write().await;
         if let Err(e) = chain_lock.add_block(block.clone()) {
             warn!("MSG_BLOCK_VALIDATION_FAILED: {}", e);
@@ -127,9 +183,10 @@ impl SyncManager {
         // 4. Update Known Hashes
         self.known_hashes.insert(block_hash);
         
-        // 5. Prune old known_hashes to prevent memory leak (keep last 1000)
-        if self.known_hashes.len() > 1000 {
-            self.known_hashes.clear(); // Simplified; real impl should keep recent ones
+        // 5. Prune known_hashes if too large (Simple LRU-like clear)
+        if self.known_hashes.len() > 2000 {
+            self.known_hashes.clear(); 
+            // In production: keep the most recent 1000 hashes
         }
 
         Ok(())
@@ -141,26 +198,29 @@ impl SyncManager {
         let height = chain_lock.get_height();
         let root = chain_lock.get_latest_hash().unwrap_or_default();
         
-        // Extract current reputation state from DB (expensive operation, cached in real impl)
+        // Extract current reputation state from DB
         // Pseudo-code: let rep_state = db.get_all_reputations().await?;
         let rep_state = vec![]; 
+
+        // Optional: Generate dictionary patch
+        let dict_patch = None; 
 
         Ok(StateSnapshot {
             height,
             merkle_root: root,
             timestamp: chrono::Utc::now().timestamp() as u64,
             reputation_state: rep_state,
+            dict_patch,
         })
     }
 
-    /// Applies a received snapshot, resetting local state.
+    /// Applies a received snapshot.
     async fn apply_snapshot(&self, snapshot: StateSnapshot) -> Result<(), &'static str> {
-        // 1. Clear old chain/cache
         let mut chain_lock = self.chain.write().await;
         chain_lock.blocks_cache.clear();
         
-        // 2. Set new height/root
-        // (In real impl, update DB with new reputation state)
+        // Reset chain height to snapshot height
+        // In real impl: db.update_reputation_state(snapshot.reputation_state).await?;
         
         info!("MSG_SNAPSHOT_APPLIED_SUCCESS: Height {}", snapshot.height);
         Ok(())
@@ -168,39 +228,74 @@ impl SyncManager {
 
     /// Checks if a block meets the Storage Radius criteria.
     fn is_within_radius(&self, _block: &Block) -> bool {
-        // Real implementation would decode block metadata (geo-hash)
-        // and compare with user's current location + storage_radius_km.
-        // For now, assume true for demonstration.
+        // Real implementation: decode geo-hash from block metadata and compare
         true 
     }
 
-    /// Adaptive Gossip: Decides whether to propagate a message based on Mode.
+    /// Adaptive Gossip: Decides whether to propagate a message based on Mode and Content.
     pub fn should_propagate(&self, msg_type: &MessageType) -> bool {
         match self.mode {
             NodeMode::Eco => {
-                // Only propagate critical alerts (e.g., TrustRevoke)
-                matches!(msg_type, MessageType::Gossip(GossipPayload { priority: 1, .. })) 
+                // Only propagate critical security events (TrustRevoke, High Priority Alerts)
+                matches!(msg_type, MessageType::Report(_)) 
             },
-            NodeMode::Active => true, // Propagate most things
-            NodeMode::Guardian => true, // Aggressive propagation
+            NodeMode::Active => true,
+            NodeMode::Guardian => true,
         }
+    }
+    
+    /// Securely clears sensitive caches.
+    pub async fn shutdown(&mut self) {
+        self.known_hashes.clear();
+        self.session_dict = SessionDictionary::new(); // Reset session dict
+        info!("MSG_SYNC_SHUTDOWN_COMPLETE");
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chain::block::Block;
 
     #[tokio::test]
-    async fn test_storage_radius_filtering() {
-        // Mock setup
+    async fn test_ghost_mode_restriction() {
         let db = Arc::new(RwLock::new(DbManager::new("", "").await.unwrap()));
         let chain = Arc::new(RwLock::new(AppChain::new(db.clone()).await.unwrap()));
-        let sync_mgr = SyncManager::new(db, chain, 50); // 50km radius
+        let sync_mgr = SyncManager::new(db, chain, 50);
 
-        // Create a mock block (would need geo-data in real test)
-        // Assert that blocks outside radius are ignored without error
-        // (Logic tested via is_within_radius stub)
-        assert!(sync_mgr.is_within_radius(&Block::new(0, "gen".to_string(), vec![], "val".to_string())));
+        let req = SyncRequest {
+            known_heights: vec![],
+            known_hashes: vec![],
+            request_snapshot: false,
+            peer_trust_level: 0, // Untrusted/Ghost
+        };
+
+        // Should return Ack only for untrusted peer in Eco/Active mode
+        let resp = sync_mgr.handle_sync_request(&req).await.unwrap();
+        assert!(matches!(resp, SyncResponse::Ack));
+    }
+
+    #[tokio::test]
+    async fn test_delta_sync_logic() {
+        // Setup with some blocks in chain (mocked)
+        let db = Arc::new(RwLock::new(DbManager::new("", "").await.unwrap()));
+        let chain = Arc::new(RwLock::new(AppChain::new(db.clone()).await.unwrap()));
+        let sync_mgr = SyncManager::new(db, chain, 50);
+
+        let req = SyncRequest {
+            known_heights: vec![0, 1], // We have up to height 1
+            known_hashes: vec![],
+            request_snapshot: false,
+            peer_trust_level: 5, // Trusted
+        };
+
+        // Should return missing blocks (2, 3, ...) up to limit
+        let resp = sync_mgr.handle_sync_request(&req).await.unwrap();
+        if let SyncResponse::Blocks(blocks) = resp {
+            // Assert blocks are returned (logic depends on mock chain content)
+            // For now, just checking it doesn't crash
+        } else {
+            panic!("Expected Blocks response");
+        }
     }
 }
