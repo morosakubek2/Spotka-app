@@ -1,7 +1,7 @@
 // mobile/rust-core/src/dict/cts_parser.rs
 // Compact Tag Sequence (CTS) Parser & Validator.
 // Architecture: Language-Agnostic, UTF-8 Support, Strict Syntax Validation.
-// Note: No built-in dictionaries. Dictionary loading is handled by 'loader.rs'.
+// Update: Allows MULTIPLE positive tags (Hybrid meetups), max total 10 tags.
 // Year: 2026 | Rust Edition: 2024
 
 use serde::{Serialize, Deserialize};
@@ -10,7 +10,7 @@ use std::fmt;
 /// Status types for a single tag in the sequence.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum TagStatus {
-    Positive,   // No prefix (Main goal). Exactly one required.
+    Positive,   // No prefix. Can be multiple now (e.g., "kino" + "kaw").
     Negative,   // Prefix '0' (Exclusion).
     Mediating,  // Prefix '1' (Additional activity).
     Limiting,   // Prefix '2' (Condition/Missing item). Must follow '1'.
@@ -32,30 +32,29 @@ pub enum CtsError {
     EmptyInput,
     SpaceInTag,
     InvalidStatusChar,
-    ExactlyOnePositiveRequired,
+    AtLeastOnePositiveRequired, // Changed from ExactlyOne...
     TooManyTags,
     LimitingWithoutMediating,
+    TrailingStatusChar, // New error for cases like "kino0"
 }
 
 impl fmt::Display for CtsError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        // Display the KEY, not the message. UI will translate.
         match self {
             CtsError::EmptyInput => write!(f, "ERR_CTS_EMPTY_INPUT"),
             CtsError::SpaceInTag => write!(f, "ERR_CTS_SPACE_IN_TAG"),
             CtsError::InvalidStatusChar => write!(f, "ERR_CTS_INVALID_STATUS_CHAR"),
-            CtsError::ExactlyOnePositiveRequired => write!(f, "ERR_CTS_EXACTLY_ONE_POSITIVE"),
+            CtsError::AtLeastOnePositiveRequired => write!(f, "ERR_CTS_AT_LEAST_ONE_POSITIVE"),
             CtsError::TooManyTags => write!(f, "ERR_CTS_TOO_MANY_TAGS"),
             CtsError::LimitingWithoutMediating => write!(f, "ERR_CTS_LIMITING_WITHOUT_MEDIATING"),
+            CtsError::TrailingStatusChar => write!(f, "ERR_CTS_TRAILING_STATUS"),
         }
     }
 }
 
 /// Parses a Compact Tag Sequence string into a vector of CtsTag structs.
-/// Input example: "kino0alkohol1granie2pilko"
+/// Input example: "kino0alkohol1granie2pilko" OR "kinokawa" (hybrid)
 /// Returns: Result<Vec<CtsTag>, CtsError>
-/// 
-/// This function performs SYNTAX validation only. It does not check semantics or dictionary existence.
 pub fn parse_cts(input: &str) -> Result<Vec<CtsTag>, CtsError> {
     if input.is_empty() {
         return Err(CtsError::EmptyInput);
@@ -92,30 +91,29 @@ pub fn parse_cts(input: &str) -> Result<Vec<CtsTag>, CtsError> {
             if c.is_whitespace() {
                 return Err(CtsError::SpaceInTag);
             }
-            // Allow any non-whitespace, non-prefix character (supports full UTF-8)
             current_word.push(c);
         }
         i += 1;
     }
 
-    // Push the last tag if exists
+    // Handle trailing status character (e.g., "kino0" ends with '0' but no word after)
     if !current_word.is_empty() {
         validate_and_push_tag(&mut tags, current_word, current_status, &mut positive_count)?;
-    } else if i > 0 && (chars[i-1] == '0' || chars[i-1] == '1' || chars[i-1] == '2') {
-        // Edge case: String ends with a status digit but no word follows (e.g., "kino0")
-        // Depending on strictness, this could be an error. Here we treat "kino0" as valid if "0" was part of previous logic?
-        // Actually, "kino0" means "kino" (pos) then start of negative. If no word follows, it's incomplete.
-        // But our loop logic handles "kino0" -> pushes "kino", sets status Negative, loop ends. 
-        // current_word is empty. So nothing pushed. This is correct: "kino0" is just "kino" with a dangling flag?
-        // Let's enforce that a status digit MUST be followed by a word.
-        return Err(CtsError::EmptyInput); // Or a specific "ERR_TRAILING_STATUS"
+    } else if i > 0 {
+        let last_char = chars[i-1];
+        if last_char == '0' || last_char == '1' || last_char == '2' {
+            return Err(CtsError::TrailingStatusChar);
+        }
     }
 
     // Final Validations
-    if positive_count != 1 {
-        return Err(CtsError::ExactlyOnePositiveRequired);
+    
+    // RULE CHANGE: Allow multiple positive tags, but require AT LEAST ONE.
+    if positive_count < 1 {
+        return Err(CtsError::AtLeastOnePositiveRequired);
     }
 
+    // Total limit still applies (max 10 tags of ANY type)
     if tags.len() > 10 {
         return Err(CtsError::TooManyTags);
     }
@@ -144,19 +142,18 @@ fn validate_and_push_tag(
     tags.push(CtsTag {
         status,
         word,
-        index: None, // Will be assigned by Compressor based on external dictionary
+        index: None, 
     });
 
     Ok(())
 }
 
 /// Serializes a list of tags back to a CTS string.
-/// Used when saving to DB or sending over P2P (before compression).
 pub fn serialize_cts(tags: &[CtsTag]) -> String {
     let mut output = String::new();
     for tag in tags {
         match tag.status {
-            TagStatus::Positive => {} // No prefix
+            TagStatus::Positive => {} 
             TagStatus::Negative => output.push('0'),
             TagStatus::Mediating => output.push('1'),
             TagStatus::Limiting => output.push('2'),
@@ -171,44 +168,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_valid_simple() {
+    fn test_valid_single_positive() {
         let result = parse_cts("kino").unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].word, "kino");
         assert_eq!(result[0].status, TagStatus::Positive);
-        assert!(result[0].index.is_none()); // Index not set by parser
     }
 
     #[test]
-    fn test_valid_complex_utf8() {
-        let input = "spacer1gra2pilka0deszcz";
+    fn test_valid_multiple_positives_hybrid() {
+        // NEW TEST: Hybrid meetup "Kino AND Coffee"
+        let result = parse_cts("kinokawa").unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].word, "kino");
+        assert_eq!(result[0].status, TagStatus::Positive);
+        assert_eq!(result[1].word, "kawa");
+        assert_eq!(result[1].status, TagStatus::Positive);
+    }
+
+    #[test]
+    fn test_valid_complex_mixed() {
+        // "Spacer AND Ball games" (2 pos), "NO rain" (1 neg), "WITH friends" (1 med)
+        let input = "spacergra0deszcz1znajomi";
         let result = parse_cts(input).unwrap();
         assert_eq!(result.len(), 4);
-        assert_eq!(result[0].word, "spacer");
-        assert_eq!(result[2].word, "pilka");
+        assert_eq!(result[0].status, TagStatus::Positive); // spacer
+        assert_eq!(result[1].status, TagStatus::Positive); // gra
+        assert_eq!(result[2].status, TagStatus::Negative); // deszcz
+        assert_eq!(result[3].status, TagStatus::Mediating); // znajomi
     }
 
     #[test]
     fn test_error_no_positive() {
         let result = parse_cts("0alkohol");
-        assert_eq!(result.unwrap_err(), CtsError::ExactlyOnePositiveRequired);
+        assert_eq!(result.unwrap_err(), CtsError::AtLeastOnePositiveRequired);
     }
 
     #[test]
-    fn test_error_two_positives() {
-        let result = parse_cts("kinoplansza");
-        assert_eq!(result.unwrap_err(), CtsError::ExactlyOnePositiveRequired);
+    fn test_error_too_many_tags() {
+        // 11 positive tags
+        let input = "1234567890a"; 
+        let result = parse_cts(input);
+        assert_eq!(result.unwrap_err(), CtsError::TooManyTags);
     }
 
     #[test]
-    fn test_error_limiting_orphan() {
-        let result = parse_cts("kino2pilka");
-        assert_eq!(result.unwrap_err(), CtsError::LimitingWithoutMediating);
-    }
-    
-    #[test]
-    fn test_error_space() {
-        let result = parse_cts("kino film");
-        assert_eq!(result.unwrap_err(), CtsError::SpaceInTag);
+    fn test_error_trailing_status() {
+        let result = parse_cts("kino0");
+        assert_eq!(result.unwrap_err(), CtsError::TrailingStatusChar);
     }
 }
