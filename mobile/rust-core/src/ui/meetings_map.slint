@@ -1,0 +1,263 @@
+// mobile/rust-core/src/ui/meetings_map.slint
+// Concrete Map View: Renders OSM Tiles (Offline MBTiles) with Meeting Pins.
+// Features: Pan, Zoom, Dynamic Pins, Filtering (Tag, Time, Distance).
+// Architecture: Slint handles UI overlay, Rust handles Geo rendering & Data logic.
+// Year: 2026 | Slint Version: 1.6+
+
+import { VerticalLayout, HorizontalLayout, Text, Button, Rectangle, Image, ComboBox, Slider } from "std-widgets.slint";
+
+// Data structure for a pin on the map
+struct MeetingPinData {
+    id: string,
+    // Visual position on the current viewport (0.0 to 1.0 relative coordinates)
+    // In real app, Rust calculates this from Lat/Lon + Camera Matrix
+    rel_x: float, 
+    rel_y: float,
+    
+    // Display Data
+    main_tags: string,      // e.g., "Kino • Kawa" (Positive tags only)
+    organizer_info: string, // e.g., "Anna + 4" (Name + count)
+    time_info: string,      // e.g., "18:00"
+}
+
+export component MeetingsMap inherits Rectangle {
+    width: 100%;
+    height: 100%;
+    
+    in-out property <string> language: "en";
+    
+    // State for Filters
+    in-out property <string> filter_tag: ""; 
+    in-out property <int> filter_time_range: 0; // 0=All, 1=Today, 2=3 Days
+    in-out property <int> filter_distance_km: 50; // Default 50km
+    
+    // List of pins to render (Populated by Rust)
+    property <[MeetingPinData]> pins: [
+        { id: "1", rel_x: 0.3, rel_y: 0.4, main_tags: "Spacer", organizer_info: "Jan + 2", time_info: "17:00" },
+        { id: "2", rel_x: 0.7, rel_y: 0.6, main_tags: "Kino", organizer_info: "Anna + 5", time_info: "20:00" }
+    ];
+
+    // Callbacks
+    callback request_center_on_user();
+    callback request_zoom_in();
+    callback request_zoom_out();
+    
+    // CRITICAL: Passes click to parent (MeetingsView) to show details
+    callback request_show_meeting_details(string); 
+
+    // --- FILTER BAR (Top Overlay) ---
+    Rectangle {
+        x: 10px;
+        y: 10px;
+        width: parent.width - 20px;
+        height: 140px; // Expanded height for controls
+        background: #FFFFFF;
+        border-width: 1px;
+        border-color: #000000;
+        z-order: 10;
+
+        VerticalLayout {
+            padding: 10px;
+            spacing: 8px;
+            
+            Text {
+                text: tr("KEY_MAP_FILTERS");
+                font-weight: bold;
+                font-size: 12px;
+            }
+
+            // Row 1: Tag Filter
+            HorizontalLayout {
+                spacing: 5px;
+                Text {
+                    text: tr("KEY_FILTER_TAG");
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+                ComboBox {
+                    model: ["Wszystkie", "Sport", "Kultura", "Natura"]; // Populated by Rust
+                    selected-index <=> root.filter_tag_index; 
+                    // Note: In real app, bind to string or ID, here simplified to index
+                }
+            }
+
+            // Row 2: Time Filter
+            HorizontalLayout {
+                spacing: 5px;
+                Text {
+                    text: tr("KEY_FILTER_TIME");
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+                ComboBox {
+                    model: [tr("OPT_ALL_TIME"), tr("OPT_TODAY"), tr("OPT_3_DAYS")];
+                    selected-index <=> root.filter_time_range;
+                }
+            }
+
+            // Row 3: Distance Slider
+            HorizontalLayout {
+                spacing: 5px;
+                Text {
+                    text: tr("KEY_FILTER_DIST");
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+                Slider {
+                    minimum-value: 1;
+                    maximum-value: 100;
+                    value <=> root.filter_distance_km;
+                    width: 100px;
+                }
+                Text {
+                    text: "${root.filter_distance_km} km";
+                    font-size: 12px;
+                    font-weight: bold;
+                }
+            }
+            
+            // Apply Button (Optional if auto-apply, but good for performance on map)
+            Button {
+                text: tr("ACTION_APPLY_FILTERS");
+                min-height: 30px;
+                clicked => {
+                    // Trigger Rust to re-query DB and update 'pins' property
+                    // root.request_apply_filters(); 
+                }
+            }
+        }
+    }
+
+    // --- MAP CANVAS ---
+    // In production, this Image is constantly updated by Rust backend 
+    // with rendered tiles from local MBTiles database based on camera position.
+    Image {
+        source: @image-url("map_placeholder.png"); 
+        width: parent.width;
+        height: parent.height;
+        object-fit: cover;
+        
+        // Overlay: User Location Indicator (Crosshair)
+        Rectangle {
+            x: parent.width / 2 - 10px;
+            y: parent.height / 2 - 10px;
+            width: 20px;
+            height: 20px;
+            border-width: 2px;
+            border-color: #000000;
+            border-radius: 10px;
+            background: #FFFFFF;
+            opacity: 0.8;
+            z-order: 5;
+        }
+
+        // Overlay: Meeting Pins (Dynamic Loop)
+        for pin_data in root.pins : Rectangle {
+            // Position calculated by Rust (relative to viewport)
+            x: pin_data.rel_x * parent.width - 15px; 
+            y: pin_data.rel_y * parent.height - 40px;
+            width: 30px;
+            height: 40px;
+            background: #000000;
+            border-radius: 15px; // Teardrop shape approx
+            z-order: 6;
+            
+            // Pin Icon
+            Text {
+                text: "•";
+                color: #FFFFFF;
+                font-size: 20px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                y: -5px;
+            }
+
+            // Label Bubble (Visible on hover or always for key meetings)
+            Rectangle {
+                y: -35px;
+                x: -20px;
+                width: 70px;
+                height: 30px;
+                background: #FFFFFF;
+                border-width: 1px;
+                border-color: #000000;
+                
+                VerticalLayout {
+                    spacing: 0px;
+                    alignment: center;
+                    Text {
+                        text: pin_data.time_info;
+                        font-size: 10px;
+                        font-weight: bold;
+                        color: #000000;
+                    }
+                    Text {
+                        text: pin_data.organizer_info;
+                        font-size: 9px;
+                        color: #333333;
+                        wrap: word-wrap;
+                        horizontal-alignment: center;
+                    }
+                    // Main tags might be too long for map pin, showing only time/org usually
+                    // But if short, we can add:
+                    // Text { text: pin_data.main_tags; font-size: 8px; font-style: italic; }
+                }
+            }
+
+            // Click Area
+            TouchArea {
+                width: parent.width;
+                height: parent.height + 40px; // Include label area
+                clicked => {
+                    root.request_show_meeting_details(pin_data.id);
+                }
+            }
+        }
+    }
+
+    // --- MAP CONTROLS (Bottom Right) ---
+    Rectangle {
+        x: parent.width - 60px;
+        y: parent.height - 100px;
+        width: 50px;
+        height: 80px;
+        background: #FFFFFF;
+        border-width: 1px;
+        border-color: #000000;
+        z-order: 10;
+        
+        VerticalLayout {
+            spacing: 0px;
+            Button {
+                text: "+";
+                min-height: 40px;
+                border-radius: 0px;
+                background: transparent;
+                clicked => root.request_zoom_in();
+            }
+            Rectangle { width: 100%; height: 1px; background: #000000; }
+            Button {
+                text: "-";
+                min-height: 39px;
+                border-radius: 0px;
+                background: transparent;
+                clicked => root.request_zoom_out();
+            }
+        }
+    }
+    
+    // Button: Center on User
+    Button {
+        x: parent.width - 60px;
+        y: parent.height - 140px;
+        width: 50px;
+        height: 50px;
+        text: "📍";
+        background: #FFFFFF;
+        border-width: 1px;
+        border-color: #000000;
+        border-radius: 25px;
+        z-order: 10;
+        clicked => root.request_center_on_user();
+    }
+}

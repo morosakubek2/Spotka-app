@@ -1,0 +1,55 @@
+// mobile/rust-core/src/ui/events_view.slint
+// Events View: Placeholder for Premium Features (v0.1.0-alpha).
+// Design: Reductive Functionalism.
+// Year: 2026 | Slint Version: 1.6+
+
+import { VerticalLayout, Text } from "std-widgets.slint";
+
+export component EventsView inherits Rectangle {
+    width: 100%;
+    height: 100%;
+    background: #FFFFFF;
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 20px;
+        padding: 40px;
+
+        // Geometric Placeholder Icon (Circle with dashed border)
+        Rectangle {
+            width: 80px;
+            height: 80px;
+            background: transparent;
+            border-color: #000000;
+            border-width: 2px;
+            border-style: dashed;
+            radius: 40px;
+            
+            Text {
+                text: "★";
+                font-size: 40px;
+                color: #000000;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
+
+        Text {
+            text: tr("MSG_EVENTS_COMING_SOON");
+            font-size: 18px;
+            font-weight: bold;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+
+        Text {
+            text: tr("MSG_EVENTS_PREMIUM_TEASER");
+            font-size: 14px;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+            color: #555555;
+        }
+    }
+}

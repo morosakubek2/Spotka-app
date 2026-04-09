@@ -1,7 +1,8 @@
 // mobile/rust-core/src/ffi/mod.rs
 // FFI Module: Native Bridges for Android (JNI) and iOS (Objective-C/Swift).
 // Architecture: Zero-cost abstractions, safe memory handling, Language Agnostic errors.
-// Features: String helpers, Byte buffers, Global JVM context (Android), Unified Result types.
+// Features: String helpers, Byte buffers, Global JVM context (Android), Unified Result types,
+//           P2P Event Marshalling for Private Mesh (Invites, Status Updates).
 // Year: 2026 | Rust Edition: 2024
 
 #[cfg(target_os = "android")]
@@ -44,7 +45,6 @@ pub fn get_activity_context() -> Option<&'static jni::objects::JObject> {
 // --- Safe String Conversion Helpers ---
 
 /// Converts a C-string (from native) to a Rust String.
-/// Caller retains ownership of the C-string (does not free it).
 pub fn copy_cstr_to_rust(c_str: *const c_char) -> Result<String, &'static str> {
     if c_str.is_null() {
         return Err("ERR_NULL_POINTER");
@@ -67,21 +67,17 @@ pub fn copy_rust_str_to_cstr(rust_str: &str) -> *mut c_char {
 }
 
 /// Frees a C-string allocated by Rust.
-/// Must be called from the native side after using the string returned by Rust.
 #[no_mangle]
 pub extern "C" fn ffi_free_cstring(s: *mut c_char) {
     if !s.is_null() {
         unsafe {
             let _ = CString::from_raw(s);
-            // Memory dropped here
         }
     }
 }
 
-// --- Byte Buffer Helpers (For Crypto/P2P) ---
+// --- Byte Buffer Helpers ---
 
-/// Represents a buffer of bytes allocated by Rust.
-/// Native side must call `ffi_free_byte_buffer` after reading data.
 #[repr(C)]
 pub struct FfiByteBuffer {
     pub data: *mut u8,
@@ -93,23 +89,21 @@ impl FfiByteBuffer {
         let mut vec = vec;
         let ptr = vec.as_mut_ptr();
         let len = vec.len();
-        std::mem::forget(vec); // Prevent Rust from dropping it
+        std::mem::forget(vec);
         FfiByteBuffer { data: ptr, len }
     }
 }
 
-/// Frees a byte buffer allocated by Rust.
 #[no_mangle]
 pub extern "C" fn ffi_free_byte_buffer(buffer: FfiByteBuffer) {
     if !buffer.data.is_null() && buffer.len > 0 {
         unsafe {
-            // Reconstruct vector to drop it safely
             let _vec = Vec::from_raw_parts(buffer.data, buffer.len, buffer.len);
         }
     }
 }
 
-// --- Unified Error Codes ---
+// --- Unified Error Codes (Expanded for P2P Mesh) ---
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -123,6 +117,14 @@ pub enum FfiErrorCode {
     P2PDisconnected = 6,
     IdentityNotFound = 7,
     BiometricAuthFailed = 8,
+    
+    // NEW: P2P Mesh Specific Errors
+    MeetingFull = 9,
+    FriendsOnlyRestricted = 10,
+    NotInNetwork = 11,
+    InviteExpired = 12,
+    UnauthorizedAction = 13,
+    RateLimitExceeded = 14,
 }
 
 impl From<&str> for FfiErrorCode {
@@ -135,8 +137,79 @@ impl From<&str> for FfiErrorCode {
             "ERR_BIOMETRIC_AUTH_FAILED" => FfiErrorCode::BiometricAuthFailed,
             "ERR_NULL_POINTER" => FfiErrorCode::NullPointer,
             "ERR_INVALID_UTF8" => FfiErrorCode::InvalidUtf8,
+            
+            // New mappings
+            "ERR_MEETING_FULL" => FfiErrorCode::MeetingFull,
+            "ERR_FORWARDING_RESTRICTED" | "ERR_FRIENDS_ONLY" => FfiErrorCode::FriendsOnlyRestricted,
+            "ERR_TARGET_NOT_IN_NETWORK" => FfiErrorCode::NotInNetwork,
+            "ERR_INVITE_EXPIRED" => FfiErrorCode::InviteExpired,
+            "ERR_UNAUTHORIZED_PARTICIPATION" => FfiErrorCode::UnauthorizedAction,
+            "ERR_RATE_LIMIT_EXCEEDED" => FfiErrorCode::RateLimitExceeded,
+            
             _ => FfiErrorCode::GenericError,
         }
+    }
+}
+
+// --- P2P Event Structure (For pushing to UI) ---
+
+/// Represents a P2P event pushed from Rust to Native UI.
+/// Memory management: Native side must call `ffi_free_p2p_event` after processing.
+#[repr(C)]
+pub struct FfiP2PEvent {
+    pub event_type: u8, // 0: InviteReceived, 1: ParticipationUpdate, 2: PeerConnected, 3: Error
+    pub meeting_id: *mut c_char,
+    pub user_id: *mut c_char,
+    pub details: *mut c_char, // e.g., Status string or Error message
+    pub error_code: FfiErrorCode,
+}
+
+impl FfiP2PEvent {
+    pub fn new_invite_received(meeting_id: &str, organizer_id: &str) -> Self {
+        FfiP2PEvent {
+            event_type: 0,
+            meeting_id: copy_rust_str_to_cstr(meeting_id),
+            user_id: copy_rust_str_to_cstr(organizer_id),
+            details: ptr::null_mut(),
+            error_code: FfiErrorCode::Success,
+        }
+    }
+
+    pub fn new_participation_update(meeting_id: &str, user_id: &str, status: &str) -> Self {
+        FfiP2PEvent {
+            event_type: 1,
+            meeting_id: copy_rust_str_to_cstr(meeting_id),
+            user_id: copy_rust_str_to_cstr(user_id),
+            details: copy_rust_str_to_cstr(status),
+            error_code: FfiErrorCode::Success,
+        }
+    }
+
+    pub fn new_error(meeting_id: Option<&str>, msg: &str, code: FfiErrorCode) -> Self {
+        FfiP2PEvent {
+            event_type: 3,
+            meeting_id: match meeting_id {
+                Some(id) => copy_rust_str_to_cstr(id),
+                None => ptr::null_mut(),
+            },
+            user_id: ptr::null_mut(),
+            details: copy_rust_str_to_cstr(msg),
+            error_code: code,
+        }
+    }
+}
+
+/// Frees memory associated with an FfiP2PEvent.
+#[no_mangle]
+pub extern "C" fn ffi_free_p2p_event(event: FfiP2PEvent) {
+    if !event.meeting_id.is_null() {
+        unsafe { let _ = CString::from_raw(event.meeting_id); }
+    }
+    if !event.user_id.is_null() {
+        unsafe { let _ = CString::from_raw(event.user_id); }
+    }
+    if !event.details.is_null() {
+        unsafe { let _ = CString::from_raw(event.details); }
     }
 }
 
@@ -144,7 +217,6 @@ impl From<&str> for FfiErrorCode {
 
 #[ctor::ctor]
 fn ffi_init() {
-    // Initialize logger based on platform
     #[cfg(target_os = "android")]
     android_logger::init_once(
         android_logger::Config::default()
@@ -154,13 +226,13 @@ fn ffi_init() {
 
     #[cfg(target_os = "ios")]
     {
-        // iOS logging handled via os_log in ios module
+        // iOS logging handled via os_log
     }
 
     info!("MSG_FFI_LAYER_INITIALIZED");
 }
 
-// --- Test FFI Exports (Optional for debugging) ---
+// --- Test/Debug Exports ---
 
 #[no_mangle]
 pub extern "C" fn ffi_get_version() -> *mut c_char {
