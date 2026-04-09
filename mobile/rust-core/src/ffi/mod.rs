@@ -118,6 +118,12 @@ pub enum FfiErrorCode {
     IdentityNotFound = 7,
     BiometricAuthFailed = 8,
     
+    // QR Code Errors
+    PingInvalidCode = 15,      // Kod nieczytelny lub uszkodzony
+    PingSignatureFailed = 16,  // Błąd weryfikacji podpisu
+    PingSelfAttempt = 17,      // Próba pingowania samego siebie
+    PingAlreadyExists = 18,    // Znajomy już dodany
+    
     // NEW: P2P Mesh Specific Errors
     MeetingFull = 9,
     FriendsOnlyRestricted = 10,

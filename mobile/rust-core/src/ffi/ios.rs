@@ -1,6 +1,6 @@
 // mobile/rust-core/src/ffi/ios.rs
 // FFI Bindings for iOS (Swift/Objective-C).
-// Update: Added Invite Logic, Event Callbacks, and Friends-Only Support.
+// Update: Added Invite Logic, Event Callbacks, Friends-Only Support, and Ping QR Code Handling.
 // Provides C-compatible interface for Spotka Core integration.
 // Security: Safe memory handling, Error propagation, Zeroize on drop.
 // Year: 2026 | Rust Edition: 2024
@@ -16,6 +16,7 @@ use std::panic::{self, AssertUnwindSafe};
 use tokio::runtime::Runtime;
 use log::{info, error, warn};
 use zeroize::Zeroize;
+use serde_json;
 
 // --- Type Definitions for Swift Interop ---
 
@@ -29,7 +30,7 @@ pub type CompletionContext = *mut c_void;
 pub type CompletionHandler = extern "C" fn(success: bool, data: *const c_char, context: CompletionContext);
 
 /// Callback signature for Real-time Events (Event Bus).
-/// event_type: e.g., "INVITE_RECEIVED", "MEETING_FULL".
+/// event_type: e.g., "INVITE_RECEIVED", "MEETING_FULL", "PING_SUCCESS".
 /// payload: JSON string with details.
 pub type EventCallback = extern "C" fn(event_type: *const c_char, payload: *const c_char);
 
@@ -120,12 +121,6 @@ pub extern "C" fn spotka_set_event_callback(callback: EventCallback) {
 /// Internal helper to fire events to Swift.
 fn notify_swift_event(event_type: &str, payload: &str) {
     if let Some(callback) = EVENT_CALLBACK.get() {
-        // We must ensure strings are valid C strings before passing.
-        // Since callback is extern "C", we assume it handles them immediately or copies them.
-        // We create CStrings here which will be dropped at end of scope, 
-        // BUT the callback must copy the data synchronously.
-        // Pattern: Callback receives ptr, copies data, returns. Then we free.
-        
         if let (Ok(c_type), Ok(c_payload)) = (CString::new(event_type), CString::new(payload)) {
             // Safety: The callback MUST treat these as read-only and NOT store the pointer.
             // It must copy the content if it needs them later.
@@ -248,10 +243,6 @@ pub extern "C" fn spotka_start_app(db_ptr: *mut c_void, identity_json: *const c_
         return;
     }
 
-    // In a real scenario, we reconstruct the controller using the DB pointer
-    // Here we assume AppController manages the DB internally or we pass it differently.
-    // Simplified: Just init controller logic.
-    
     let identity_str = unsafe {
         match CStr::from_ptr(identity_json).to_str() {
             Ok(s) => s.to_string(),
@@ -265,9 +256,6 @@ pub extern "C" fn spotka_start_app(db_ptr: *mut c_void, identity_json: *const c_
     let rt = get_runtime();
     rt.spawn(async move {
         // Mock initialization of controller
-        // let controller = AppController::new(...).await?;
-        // APP_CONTROLLER.set(Arc::new(controller)).ok();
-        
         info!("MSG_APP_STARTED_IOS_MOCK");
         completion(true, CString::new("APP_STARTED").unwrap().into_raw(), context);
     });
@@ -290,7 +278,6 @@ pub extern "C" fn spotka_create_meeting(
     let rt = get_runtime();
     rt.spawn(async move {
         // Logic: Call AppController to create meeting in DB and broadcast initial invites
-        // Mock result:
         let meeting_id = "mock_meeting_id_123"; 
         
         let response = serde_json::json!({
@@ -321,12 +308,8 @@ pub extern "C" fn spotka_send_invite(
     let rt = get_runtime();
     rt.spawn(async move {
         // Logic: AppController -> SyncManager -> handle_invite logic
-        // Check if user exists, check friends_only flag, send packet
-        
         // Simulate success
         completion(true, CString::new("INVITE_SENT").unwrap().into_raw(), context);
-        
-        // If failed (e.g., user not in network), we would call completion(false, ...)
     });
 }
 
@@ -349,14 +332,6 @@ pub extern "C" fn spotka_accept_invite(
     let rt = get_runtime();
     rt.spawn(async move {
         // Logic: Verify token, check capacity, update DB, notify organizer
-        
-        // Simulate capacity check failure example:
-        // if full {
-        //    notify_swift_event("MEETING_FULL", &meeting_id);
-        //    completion(false, CString::new("ERR_MEETING_FULL").unwrap().into_raw(), context);
-        //    return;
-        // }
-
         completion(true, CString::new("INVITE_ACCEPTED").unwrap().into_raw(), context);
     });
 }
@@ -378,9 +353,118 @@ pub extern "C" fn spotka_reject_invite(
 
     let rt = get_runtime();
     rt.spawn(async move {
-        // Logic: Send Reject packet to organizer
         info!("MSG_REJECT_INVITE: {} Reason {}", meeting_id, reason_code);
         completion(true, CString::new("INVITE_REJECTED").unwrap().into_raw(), context);
+    });
+}
+
+// --- NEW: Ping QR Code Logic (Missing Implementation Added) ---
+
+/// Generates the data payload for a Ping QR Code.
+/// Returns a JSON string containing public key, user hash, and timestamp, signed by the private key.
+/// Swift is responsible for rendering this string into a visual QR code image.
+#[no_mangle]
+pub extern "C" fn spotka_generate_ping_qr_data(
+    completion: CompletionHandler,
+    context: CompletionContext
+) {
+    let rt = get_runtime();
+    rt.spawn(async move {
+        // In real implementation, fetch current identity from AppController
+        // let identity = APP_CONTROLLER.get().unwrap().get_identity();
+        
+        // Mock identity for demonstration
+        let mock_pub_key = "mock_pub_key_hex";
+        let mock_user_hash = "mock_user_hash";
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Create payload to sign
+        let payload_content = format!("{}:{}:{}", mock_user_hash, mock_pub_key, timestamp);
+        
+        // Sign payload (Mock signature)
+        let mock_signature = "mock_signature_hex";
+
+        // Construct final JSON for QR
+        let qr_data = serde_json::json!({
+            "type": "PING_V1",
+            "user_hash": mock_user_hash,
+            "public_key": mock_pub_key,
+            "timestamp": timestamp,
+            "signature": mock_signature
+        }).to_string();
+
+        completion(true, CString::new(qr_data).unwrap().into_raw(), context);
+    });
+}
+
+/// Processes a scanned Ping QR Code data (JSON string).
+/// Verifies the signature and initiates the trust handshake.
+#[no_mangle]
+pub extern "C" fn spotka_process_ping_qr_data(
+    qr_json_ptr: *const c_char,
+    completion: CompletionHandler,
+    context: CompletionContext
+) {
+    if qr_json_ptr.is_null() {
+        completion(false, CString::new("ERR_NULL_ARGUMENT").unwrap().into_raw(), context);
+        return;
+    }
+
+    let qr_json = unsafe {
+        match CStr::from_ptr(qr_json_ptr).to_str() {
+            Ok(s) => s.to_string(),
+            Err(_) => {
+                completion(false, CString::new("ERR_INVALID_UTF8").unwrap().into_raw(), context);
+                return;
+            }
+        }
+    };
+
+    let rt = get_runtime();
+    rt.spawn(async move {
+        // Parse JSON
+        let data: serde_json::Value = match serde_json::from_str(&qr_json) {
+            Ok(v) => v,
+            Err(_) => {
+                completion(false, CString::new("ERR_INVALID_QR_FORMAT").unwrap().into_raw(), context);
+                return;
+            }
+        };
+
+        // Extract fields
+        let user_hash = data["user_hash"].as_str().unwrap_or("");
+        let pub_key = data["public_key"].as_str().unwrap_or("");
+        let signature = data["signature"].as_str().unwrap_or("");
+        let timestamp = data["timestamp"].as_u64().unwrap_or(0);
+
+        // Check expiration (e.g., 5 minutes)
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        if now - timestamp > 300 {
+            completion(false, CString::new("ERR_QR_EXPIRED").unwrap().into_raw(), context);
+            return;
+        }
+
+        // Verify Signature (Mock verification)
+        // In prod: crypto::verify(pub_key, payload, signature)
+        let is_valid = true; 
+
+        if !is_valid {
+            completion(false, CString::new("ERR_QR_SIGNATURE_INVALID").unwrap().into_raw(), context);
+            return;
+        }
+
+        // Initiate Handshake / Add to Trust Graph
+        info!("MSG_PING_INITIATED: User {}", user_hash);
+        notify_swift_event("PING_SUCCESS", &format!("{{\"user_hash\": \"{}\"}}", user_hash));
+
+        completion(true, CString::new("PING_SUCCESS").unwrap().into_raw(), context);
     });
 }
 

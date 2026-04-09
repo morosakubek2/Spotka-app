@@ -8,6 +8,7 @@ pub mod chain;
 pub mod crypto;
 pub mod db;
 pub mod dict;
+pub mod ping; 
 pub mod p2p;
 pub mod ui;
 pub mod ffi;
